@@ -64,7 +64,7 @@ Once you have the right page, **read its `## Content` in full.** The limit is on
 not depth** — opening eight pages while hunting means your search terms were wrong, not that
 you should read less of the page you found.
 
-`AGENTS.md` at the kit root carries the full 22-row task-routing table and the rest of the
+`AGENTS.md` at the kit root carries the full 23-row task-routing table and the rest of the
 ladder. Use it and `index.md` as disambiguators when search comes back thin, never as the
 first move — both name topics, and a topic is coarser than a page.
 
@@ -114,7 +114,36 @@ reports success, and does nothing — count objects before and after.
 
 When something does fail, `methods/handling-errors.md`. Fix missing packages and wrong access
 paths yourself without narrating. Stop and ask only for a missing SimAuto licence, a
-destructive action, or a real modelling decision.
+destructive action, a real modelling decision, or the aux-file-mode case below.
+
+**In aux-file mode, ask before the first drop.** That mode is different from driving
+Simulator yourself: the user is sitting in front of a live GUI with their own case loaded,
+and every file you drop executes against it. Show them the script you propose to run, say
+what it will do, and **wait for an answer before dropping anything** — including a read-only
+scan. After they say yes once, read-only follow-ups need no further permission, but anything
+that modifies the case gets its own yes.
+
+**Ask which folder. Do not pick one.** The transfer folder is the user's choice — they may
+already have one configured from a previous session, they may want it on a particular drive,
+and on a shared or managed machine the obvious location may not be writable. Ask, and use the
+answer verbatim. `<your transfer folder>` below stands for whatever they tell you; it is a
+placeholder, not a suggestion.
+
+**Two turns, never one.**
+
+**Turn 1 — activation only.** List the setup steps, name the transfer folder, and **end the
+message there.** Do not propose a script, do not name a file you would like to drop, do not
+say "say the word and I will run X". The user has not opened the dialog yet; there is nothing
+to consent to, and bundling the two makes them approve a drop before the channel exists.
+Close with nothing more than: *tell me when the dialog is up.*
+
+**Turn 2 — only after they say it is ready.** Now propose the first script, say what it
+writes and that it is read-only, and wait again.
+
+Collapsing these into one message is the most common way this goes wrong, and it reads as
+pressure to skip the setup.
+
+See `methods/aux-file-mode.md`.
 
 ## When this base is wrong or missing, report it
 

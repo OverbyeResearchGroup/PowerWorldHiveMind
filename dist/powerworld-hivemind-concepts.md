@@ -1,5 +1,220 @@
 # PowerWorldHiveMind - CONCEPTS
 
+# ==== aux-only-powerworld.md ====
+
+---
+type: concept
+domain: tooling
+aliases: [aux-only, aux-without-esapp, aux-without-simauto, headless-aux, pure-aux]
+tags: [powerworld, aux, script, simauto, esapp, provenance, house-rule]
+---
+
+# Driving PowerWorld with aux files alone
+
+## Abstract
+
+A PowerWorld `.aux` file is a complete program, not a fragment: one loaded file can open a
+case, edit it, solve it, export results to CSV, write the message log to a text file and
+exit, with **no Python and no SimAuto call of your own**. Live-verified 2026-09-11 on a
+regional synthetic planning model. This page records what the aux language can do
+unaided, the capabilities it structurally lacks (no return values, almost no control flow,
+no assertions) and the read-back discipline that substitutes for them, the two conditional
+constructs it *does* have — the solve-failure `STOP` slots and, since the September 2026
+patch, `SetElseCreateData`'s exists-check — the syntax traps
+measured the same day, and — most importantly — **the field-name provenance rule**: the
+*Auxiliary File Format* manual is a syntax manual with no per-object field catalog, so
+field names must come from esapp's generated schema or PowerWorld's own field export,
+never from the manual and never from memory. Read before writing any `.aux` by hand.
+
+## Connections
+
+- **Up:** [powerworld-simauto](powerworld-simauto.md) · esapp package · [Home](../index.md)
+- **Across:** aux script catalog (the 344-action name index) ·
+  [esapp-script-command-wrappers](esapp-script-command-wrappers.md) (the inverse house rule for the *Python* side) ·
+  [opf-preconditions](opf-preconditions.md) (the first real study run this way) ·
+  artifact level validation (the "it reported success and wrote nothing" family this
+  page's read-back rule belongs to) · esapp settable vs enterable
+- **Applied in:** [new-device-contingency-aux](../methods/new-device-contingency-aux.md) · [case-to-case-device-transplant](case-to-case-device-transplant.md)
+- **Across:** [powerworld-script-transfer](powerworld-script-transfer.md) (the same aux text, delivered by drop file instead of a launcher)
+- **Deeper:** [esapp-schema-reference](../references/esapp-schema-reference.md) · Simulator's *Auxiliary File Format* manual (Help menu)
+
+## Content
+
+### It works, and the whole loop closes
+
+Verified 2026-09-11, ~9k-bus synthetic planning model, Simulator 24 build 577. A single
+`.aux` loaded through the GUI performed, unattended, in file order:
+
+```
+OpenCase -> EnterMode(RUN) -> SolvePowerFlow(RECTNEWT) -> SaveData x2 -> LogSave
+```
+
+The log recorded `Simulation: Successful Power Flow Solution` and both CSVs landed on
+disk. Nothing in the chain went through `pw.esa`, `RunScriptCommand`, `LoadAux` or
+`ProcessAuxFile` from the caller's side — the file was simply opened.
+
+The self-contained shape is:
+
+```
+SCRIPT
+{
+  LogClear;  LogAdd("start");  LogAddDateTime;
+  OpenCase("<absolute path>.pwb");
+  EnterMode(RUN);
+  SolvePowerFlow(RECTNEWT);
+  SaveData("<absolute path>.csv", CSV, Branch, [<fields>], [], "", [], NO, NO);
+  LogSave("<absolute path>.txt", NO);
+  ExitProgram;                     // omit to leave the GUI open
+}
+```
+
+`LogSave` is the cheapest and only general feedback channel — everything PowerWorld says
+during the run, including warnings you would otherwise never see, lands in that text file.
+
+**Unnamed `SCRIPT { }` blocks auto-execute on load.** The manual never says so in a
+positive sentence, but `StopAuxFile` is documented as suppressing every later SCRIPT and
+DATA block in the file (which presupposes they would otherwise run), and `LoadScript` is
+described as executing only the section it names — a restriction stated against normal
+open-the-file behaviour. Naming a block makes it
+*additionally* addressable via `LoadScript`; it does not gate it. Several `SCRIPT` blocks
+interleaved with `DATA` blocks in one file is the manual's own canonical layout.
+
+### The one branch aux does have: conditional-response slots
+
+Several analysis actions take a pair of optional filename slots that fire on success and
+on failure, and either slot accepts the literal `STOP`, which halts **all** aux execution:
+
+```
+SolvePrimalLP("", STOP);        // succeed: continue.  fail: halt the file.
+```
+
+The manual describes all four parameters as optional, and says they specify what should
+happen conditionally on whether a solution was found. `InitializePrimalLP`,
+`SolveSinglePrimalLPOuterLoop` and `SolveFullSCOPF` carry the same slots.
+
+**Use them on every solve whose failure would invalidate what follows.** The bare form has
+no failure handler, so a solve that does not converge lets every later stage run against
+an unsolved case and write plausible-looking numbers to correctly-named files — the exact
+silent failure this page's read-back rule exists to catch, arriving through the one door a
+read-back does not cover.
+
+### What the aux language cannot do, and what to do instead
+
+Beyond those slots and `SetElseCreateData` below: no return values, no general branching,
+no arithmetic over a table, no assertions. Consequently:
+
+- **A failed edit is indistinguishable from a successful one at runtime.** The same family
+  as [case-to-case-device-transplant](case-to-case-device-transplant.md)'s `ProcessAuxFile` trap — reports success, changes
+  nothing.
+- **Substitute a read-back CSV for every assertion.** After a write, `SaveData` the fields
+  you just wrote, *before* any solve, to a file named for the check. Then read it. A run
+  whose edit silently no-opped otherwise produces the unchanged case under new filenames,
+  with plausible numbers throughout — the failure mode that ruins a study quietly.
+- **Per-object arithmetic is impossible.** `SetData` writes one literal to every object
+  matching a filter, so "set each unit to 80% of its own maximum" cannot be expressed.
+  That is the honest boundary at which to go back to Python.
+
+### The one exists-check: `SetElseCreateData`
+
+Added in the **September 2026 patch of Simulator 24** — older builds do not have it, and
+the aux will fail on a machine running one. PowerWorld's own justification names the gap
+this page describes: *"Because AUX scripts provide no process control to determine if a
+power flow case contains a particular object, this command provides a way to do that."*
+
+```
+SetElseCreateData(objecttype, [fieldlist], [SetValueList], [DefaultValueList]);
+```
+
+If the object exists it is updated; if it does not, it is created, and **Simulator switches
+itself to EDIT mode to do so**. It affects exactly one object — there is no filter form, so
+this is not a way to conditionally update a set.
+
+The two value lists are where it goes wrong quietly:
+
+- `[fieldlist]` must carry the key fields, and `[SetValueList]` must give them non-blank
+  values. Same rule as everywhere else in this kit.
+- **A blank entry (nothing between the commas) means "fall through to the default".** An
+  empty pair of double-quotes `""` does *not* — it is a real value and suppresses the
+  default. PowerWorld's own worked example turns on exactly this distinction: with
+  `Status` written as `""` the command errors when the generator is absent, and with
+  `Status` left blank it creates the generator using the default `"Closed"`.
+- `[DefaultValueList]` is optional; omit it and Simulator's own defaults apply. Key fields
+  in it are ignored.
+- Creation still needs every **required** field to end up non-blank across the two lists.
+  Most object types silently decline to create when a required field is blank.
+
+```
+SetElseCreateData(Bus, [Number, Name, AreaNumber, ZoneNumber, NomkV],
+                       [1,,,3,], [1, "NewBus", 1, 3, 138]);
+```
+
+It does not lift the read-back rule. It tells you nothing about which branch it took, so
+if the distinction matters, `SaveData` the object afterwards and look.
+
+### The field-name provenance rule
+
+**Simulator's own *Auxiliary File Format* manual documents script syntax and contains no
+per-object field catalog.** Measured 2026-09-11: across ~10,300 lines, zero hits for any of
+the Area or generator field names needed for an OPF setup. Re-confirmed 2026-09-12 against
+the **September 1, 2026** edition — same result. **Check the `Last Updated` line on page 1
+before trusting a claim sourced from it**: the manual gains actions between editions, and
+the November 6, 2025 edition is missing four that exist by September 2026,
+`SetElseCreateData` among them. The manual says so itself — it directs
+you to *Window → Export Case Object Fields* in the GUI instead. It therefore cannot confirm
+or refute a field name, ever.
+
+So do not guess field names, and do not take them from prose pages in this vault either —
+one such page in this wiki carried an Area field name that does not exist in the schema.
+
+**Verify against esapp's generated schema first, then emit the aux.** This costs seconds,
+needs no PowerWorld session, and is the correct workflow for authoring aux by hand:
+
+```python
+from esapp.components import Area
+[f for f in Area.fields() if "AGC" in f.upper()]   # does the name exist?
+Area.is_editable("BGAGC")                           # can it be written?
+Area.is_edit_mode_only("BGAGC")                     # does it need EnterMode(EDIT)?
+Area.keys()                                         # what identifies the object?
+```
+
+`is_edit_mode_only` is the one that decides whether an `EnterMode(EDIT)` wrapper is
+required or merely noise. `keys()` matters because a `SetData` with no filter needs the
+full key row (see below). Within a script, `SaveObjectFields` gets the same metadata —
+variable name, field, column header and description — straight from the running program.
+
+### Syntax traps, all measured 2026-09-11 against the manual
+
+| Trap | Correct form |
+|---|---|
+| `SetData`'s "all objects" token is the **bare keyword** `ALL`. `""` is not legal — the quotes make it parse as a filter *named* empty string | `SetData(Area, [Field], ["Value"], ALL);` |
+| With **no** filter, `SetData` requires the object's full key row in the field list | see `Type.keys()` |
+| `SaveObjectFields` takes **three required** arguments; the field list is not optional | `SaveObjectFields("f.csv", Area, [FieldA, FieldB]);` |
+| `SaveData`'s `Transpose` and `Append` are **scalars**, not lists — a `[]` there is wrong even when it appears to work | `..., filter, [SortFieldList], NO, NO);` |
+| `SaveData`'s filter *may* be blank (unlike `SetData`'s) — blank means all objects | `..., [], "", [], NO, NO);` |
+| The `ALL` keyword is documented as usable "instead of a list of fields" on the Save commands, but the manual gives **no worked example anywhere** — bare `ALL` vs `[ALL]` is undocumented | use an explicit field list |
+| Every file path must be **absolute**; a relative path resolves against `pwrworld.exe`'s working directory, not yours | — |
+| **Smart quotes silently break a script.** Straight quotes only | never paste from Word or a PDF |
+| Solver token is `POLARNEWTON`, not the commonly written `POLARNEWT` | `RECTNEWT`, `POLARNEWTON`, `GAUSSSEIDEL`, `FASTDEC`, `ROBUST`, `DC` |
+| `EnterMode(EDIT)` is required only to **create** topology objects. Modifying an existing one is not documented as needing it | keep the wrapper anyway; it costs nothing and the manual never positively blesses modify-in-RUN |
+
+`DATA (Object, [fields]) { rows }` is the legacy header form and is correct; omitting the
+file-type specifier means space-delimited rows. `BusNum:1` is the to-bus (`variablename:location`,
+where `:0` may be omitted). Quoting string values is optional but advisable.
+
+### When to use this, and when not to
+
+Aux-only is right when the logic is declarative and the value is auditability: the whole
+study is one reviewable text file, diffable and version-controllable, with no Python
+environment to reproduce. It is wrong the moment you need to branch on a result, compute
+per-object values, or assert anything beyond "read it back and look".
+
+The middle path costs five lines and keeps both: author the whole study as `.aux` text and
+use Python purely as the launcher via `exec_aux`, which buys back the read-back assertion
+without moving any logic into Python. stochastic model backend already runs this way.
+
+
+---
+
 # ==== case-impedance-completeness.md ====
 
 ---
@@ -22,18 +237,19 @@ trusting any case you did not build**, and especially before promising anyone an
 
 ## Connections
 
-- **Up:** Cross cutting MOC
-- **Used in:** real power planning — found in the Synth9k 2031 case, 2026-08-18 ·
-  dispatch — independently confirmed on a second lineage 2026-08-18: `LineR <= 1e-6`
+- **Up:** [Home](../index.md)
+- **Found in:** a real-power planning study — the Synth9k 2031 case, 2026-08-18 — and
+  independently confirmed on a second lineage the same day: `LineR <= 1e-6`
   and `LineC == 0` on **97.5%** of `Synth9k_case` and
   **100.0%** of `Synth8k_draft` (median X/R 100,010 and 113,465), so the five
   scenario cases built from them in [applying-a-dispatch-to-a-case](../methods/applying-a-dispatch-to-a-case.md) inherit it
-- **💡 Could-apply-to:** reactive power planning (its input is exactly such a case) ·
-  synthetic creation (case handoff between build stages is where this is introduced) ·
-  identify differences (a diff that ignores R/C will not see it) · grid statistics ·
-  any project that receives a `.pwb` from another project or vintage
-- **Across:** derive by ratio (a ratio on a placeholder zero stays zero — check this
-  first) · artifact level validation (same family: the artifact exists, but is it real?)
+- **💡 Applies to:** any study whose input is exactly such a case · synthetic case
+  construction, where the handoff between build stages is where this is introduced · case
+  diffing, since a diff that ignores R/C will not see it · grid statistics · any project
+  that receives a `.pwb` from another project or vintage
+- **Across:** deriving a quantity by ratio (a ratio on a placeholder zero stays zero —
+  check this first) · artifact-level validation (same family: the artifact exists, but is
+  it real?)
 
 ## Content
 
@@ -94,10 +310,93 @@ Checklist for a restore:
 The 2031 case solved DC fine throughout. Convergence is not evidence of a complete model — it
 is evidence that the subset of the model your solver reads is self-consistent.
 
-## Links
 
-- real power planning · 2026 08 18 impedance by ratio and scenario envelope
-- derive by ratio · artifact level validation · reactive power planning
+---
+
+# ==== case-to-case-device-transplant.md ====
+
+---
+type: concept
+domain: cross-cutting
+aliases: [AUX transplant, device delta transplant, LoadAux create]
+tags: [powerworld, esapp, aux, technique, case-diff]
+---
+
+# Case-to-case device transplant
+
+## Abstract
+
+How to copy a set of devices from one PowerWorld case into another without rebuilding the chain
+that produced them — useful whenever a feature was developed on one scenario and the others are
+stranded behind unscripted stages. Carve a **filtered AUX out of the source case's own
+`SaveCase(AUX)` dump** so the field lists are PowerWorld's rather than hand-written, and load it
+with `LoadAux(create_if_not_found=True)`. To *move* a device between buses, carve its record out
+of the **target** case and re-point the bus number, so the whole schema transfers by construction.
+Proven 2026-09-01 on four Synth9k scenarios: 869 buses, 1,207 shunts, 1,019 branches, 724 gen
+moves, 147 load moves, criterion-10 clean on all four.
+
+## Connections
+
+- Used in a scenario-envelope study, to answer an accepted migration risk.
+- Complements reading a case diff — that is about *reading* a diff across two model
+  vintages, this one is about *applying* one.
+- Depends on the same key-field constraint as circuit-ID renaming: some fields can only be changed
+  through an AUX text round-trip, never by a write.
+- 💡 **Could transfer to:** any study where one scenario got a
+  feature and the rest need it, or where a chain is unreproducible and only the *result* survives.
+
+## Content
+
+### The method
+
+1. `SaveCase(AUX)` the **source** case. Its per-object blocks (`Bus (…) { … }`) carry PowerWorld's
+   own complete field lists — never hand-write one, and never assume a field name.
+2. Keep only the records you want, by key. Watch for **duplicate blocks**: a full dump writes
+   `Bus`, `Gen`, `Load` and `Branch` more than once (the extras carry cost / OPF fields). Filter
+   every occurrence, not the first.
+3. Write them back out ordered **Bus → Shunt → Branch → Transformer** so references resolve.
+4. Load into the **target** with `LoadAux(path, create_if_not_found=True)`.
+
+### The trap that eats an hour
+
+**`ProcessAuxFile` on a data aux creates nothing and reports success.** No error, no warning, and
+the device counts are simply unchanged. `LoadAux(..., create_if_not_found=True)` is the working
+call; the create flag is the entire difference. Assert on device counts after the load, never on
+the absence of an exception — a discipline guards that report evidence they did not gather
+argues for generally.
+
+### Moving a device between buses
+
+There is no move operation. Delete-and-recreate risks dropping fields silently — the
+`LoadGrounded` bug hit all 147 loads in the original migration and was invisible to a diff over
+the write set, because a dropped field is by definition absent from it.
+
+**Carve the record out of the TARGET case's own aux and re-point only the leading bus-number
+token, then delete the original.** The whole schema then transfers by construction: there is no
+field list to get wrong, and no value from the source case can leak in. This is what makes the
+technique safe across scenarios — a moved generator keeps *its own* scenario's dispatch, not the
+donor's.
+
+### Always undo the text rounding
+
+The aux writes R/X/C to 6 decimals and MW / limits to 3. Snapshot exact values before the
+round-trip and write them back afterwards, confirming on read-back. Skipping this left 147 moved
+loads 7.3e-3 MW light — small enough to pass a loose tolerance and wrong enough to poison a
+conservation check later.
+
+### esapp notes
+
+- esapp has **no `change_and_confirm_params_multiple_element`** (the older `esa` package does).
+  Write with `ChangeParametersMultipleElement`, then read back and compare yourself.
+- `GetParametersMultipleElement` returns **`None`**, not an empty frame, for an object type with
+  zero instances — a case with no shunts will crash a naive `len()`.
+- See [esapp](esapp.md) and the `SaveCase` script-command trap: `pw.save()` writes nothing silently.
+
+### When the numbering cooperates, check for it first
+
+The Synth9k transplant needed **no renumbering at all**, because the target topped out at bus 8528
+and every new bus in the source was 8529–9397. That is worth two minutes of checking before
+designing a remap: disjoint ranges turn a hard problem into a copy.
 
 
 ---
@@ -367,6 +666,183 @@ If that prints a sensible dictionary, the environment is good and you can start 
 
 ---
 
+# ==== esapp-script-command-wrappers.md ====
+
+---
+type: concept
+domain: tooling
+aliases: [esapp-wrappers, runscriptcommand-vs-named-method, esapp-named-methods]
+tags: [esapp, powerworld, simauto, script-commands, runscriptcommand, api-drift, house-rule]
+---
+
+# Named SAW methods vs. `RunScriptCommand`
+
+## Abstract
+
+House rule for every line of PowerWorld-from-Python code: call the named esapp method
+(`pw.esa.TimeStepDoRun()`), not the hand-written script string
+(`pw.esa.RunScriptCommand("TimeStepDoRun;")`). 310 of esapp 0.2.1's SAW methods wrap a
+PowerWorld SCRIPT command, and both forms reach the same COM call — the named method
+buys a Python-side signature check, correct argument-string construction, and, above all,
+**one place the maintainer can patch when PowerWorld changes a command's syntax**. This
+page records the rule, the exact mechanism (so nobody overclaims it as runtime
+validation), the two live-probed exceptions already settled elsewhere in this wiki, and
+the related 0.2.1 change that turned a write-time `ValueError` into a warning. Origin:
+feedback from the esapp author on the author's `pw.esa.RunScriptCommand` usage, verified
+against the 0.2.1 source on 2026-09-08.
+
+## Connections
+
+- **Up:** [esapp](esapp.md) · esapp package · [Home](../index.md)
+- **Across:** [powerworld-simauto](powerworld-simauto.md) · aux script catalog (raw SCRIPT name index) ·
+  [esapp-overview](../methods/esapp-overview.md) · the "it reported success and wrote
+  nothing" family this belongs to
+- **Exceptions to this rule:** [save-powerworld-case](../methods/save-powerworld-case.md) (COM `SaveCase` is a silent
+  no-op; the *script* `SaveCase` is the one that writes)
+- **Obsoleted by 0.2.1, needs re-check:** [converting-lines-to-transformers](../methods/converting-lines-to-transformers.md)
+- **Deeper:** [esapp-package-backend](../references/esapp-package-backend.md)
+
+## Content
+
+### The rule
+
+```python
+pw.esa.TimeStepDoRun()                       # correct
+pw.esa.RunScriptCommand("TimeStepDoRun;")    # wrong
+```
+
+Applies to every SCRIPT command esapp wraps — 310 named methods across 20 SAW mixins in
+0.2.1, covering roughly 300 of the ~370 SCRIPT actions Simulator defines.
+
+### Why — the actual mechanism
+
+Both forms end at the same COM call. `SAWBase._run_script` (`esapp/saw/base.py:185`) is
+a thin builder:
+
+```python
+arg_list = list(args)
+while arg_list and arg_list[-1] is None:   # strip trailing Nones
+    arg_list.pop()
+stmt = f"{command}({arg_str});" if arg_list else f"{command};"
+return self.RunScriptCommand(stmt)
+```
+
+`TimeStepDoRun` (`saw/timestep.py:10`) is literally
+`self._run_script("TimeStepDoRun", start_time or None, end_time or None)`. So the win is
+not that the wrapper does something exotic at the COM boundary. It is three ordinary
+things:
+
+1. **The signature is checked in Python, before COM.** `TimeStepDoRun(start_time: str =
+   "", end_time: str = "")` is typed. A wrong arg count is a `TypeError` on your machine,
+   not a misbehaviour inside Simulator.
+2. **The argument string is built correctly.** Trailing-`None` stripping, `format_list()`
+   bracket lists with proper quoting, `format_filter()` and the `_enums` types
+   (`FilterKeyword`, `SolverMethod`, `TSGetResultsMode`, …) — so a bogus filter name or
+   solver method cannot reach PowerWorld. Hand-rolled f-strings get exactly this wrong.
+3. **One patch point.** When PowerWorld changes a command's syntax, the fix lands in
+   esapp and `pip install -U esapp` repairs every call site at once. A hand-written
+   string is a call site the maintainer can never reach. **This is the whole argument.**
+
+### What it does NOT do — do not overclaim this
+
+esapp does **not** introspect PowerWorld's live command table, does **not** check the
+installed Simulator version, and does **not** auto-correct a stale command at runtime.
+Confirmed byte-identical in `_run_script` across 0.1.3 and 0.2.1. The guarantee is an
+**upgrade path, not a runtime check.**
+
+A related half-truth worth being precise about: a hand-written string does not vanish
+silently *if PowerWorld reports an error* — `_com_call` (`saw/base.py:378-387`) raises
+`PowerWorldError` on any non-empty error string, specialised by
+`PowerWorldError.from_message` into `SimAutoFeatureError`, `PowerWorldPrerequisiteError`,
+or `PowerWorldAddonError`. The genuinely dangerous case is narrower and worse: **a
+command whose name stays valid but whose parameter order or meaning changes.** The string
+"succeeds" and does the wrong thing. That is what the typed wrapper prevents.
+
+(`CommandNotRespectedError` was **removed in 0.2.0** — do not reference it.)
+
+### When `RunScriptCommand` is correct
+
+Only when no named wrapper exists. About 41 of the catalogued actions have none —
+largely oneline/GUI actions (`OpenOneline`, `ExportOneline`, `Animate`), dialogs
+(`MessageBox`, `ObjectFieldsInputDialog`), and a few writers
+(`ATCWriteToExcel`, `SaveDataUsingExportFormat`).
+
+Look the command up in the **SCRIPT command → esapp method index** at the bottom of the
+esapp package's own method list before concluding one is missing — absence from
+[aux-script-commands](../references/aux-script-commands.md) proves nothing, since that
+page is a task-organized working subset rather than a complete index.
+
+Leave a comment saying why whenever you do call `RunScriptCommand`.
+
+### Exception: `SaveCase` — the script command beats the COM method
+
+[save-powerworld-case](../methods/save-powerworld-case.md) is live-probed and still stands: `pw.esa.SaveCase(...)` is a
+**silent no-op** on this machine (returns `None`, raw COM returns `('',)` = success, no
+file appears), while the aux script form writes:
+
+```python
+pw.esa.RunScriptCommand(f'SaveCase("{out}", PWB);')   # exactly 2 params
+assert os.path.exists(out), "SaveCase reported success but wrote nothing"
+```
+
+This is consistent, not contradictory: esapp routes `SaveCase` through `_com_call`, not
+`_run_script`, so it is not one of the 310 SCRIPT wrappers this rule governs. The rule
+says *prefer the named wrapper over a hand-written string for the same command*; here the
+COM method and the script command are different code paths with different behaviour, and
+the script path is the one that works. Same for `OpenCase`/`CloseCase` being absent from
+the SCRIPT index.
+
+### Related: 0.2.1 turned a write-time `ValueError` into a warning
+
+Not the same rule, same underlying philosophy — esapp treats PowerWorld as the authority
+and refuses to let its own generated schema block you.
+
+Through 0.1.x, writing an unknown or read-only column raised
+(`indexable.py:228`, `:280`):
+
+```
+ValueError: Cannot set read-only field(s) on Branch: [...]
+```
+
+In 0.2.1 that became `warnings.warn` and **the write is still attempted**
+(`indexable.py:198-210`): *"PowerWorld is the authority, and the generated schema may lag
+the installed Simulator version."*
+
+Two consequences:
+
+- **A field-name typo no longer raises.** `pw[Gen, "GenMWW"] = 100` emits a warning to
+  stderr and writes nothing useful. This joins the same silent-no-op
+  family as dropping an object's key fields ([applying-a-dispatch-to-a-case](../methods/applying-a-dispatch-to-a-case.md)) and as
+  the COM `SaveCase` above: the call reports success and the effect never happens.
+  **Do not reach for `python -W error::UserWarning` to fix this** — that was the advice
+  here through 2026-09-09 and it backfires, because the *same* warning fires on ~150
+  fields that write perfectly well (below). Assert the effect instead: read the field back
+  and compare.
+- **`Read-only field(s)` is usually a false alarm.** The flag comes from esapp's generated
+  schema, which keeps only fields whose `enterable` is an unconditional `Yes` and discards
+  every conditional one. PowerWorld's own answer for `LineStatus` is *"Depends: Normally
+  enterable except when field Lockout is YES"* — so esapp calls it read-only and the write
+  works anyway. Counted against build 2026-07-22: **112 Branch fields, 33 Bus, 5 Gen
+  (including `GenMVR`), 1 Load** are enterable in PowerWorld but `is_settable() == False`.
+  The authority is `pw.esa.GetFieldList(<type>)`, whose `enterable` column is PowerWorld's,
+  not esapp's.
+- **The `XF*` bypass in [converting-lines-to-transformers](../methods/converting-lines-to-transformers.md) is now confirmed
+  unnecessary.** ✅ **Verified live 2026-09-10** on a ~2,000-bus synthetic case, Simulator build 2026-07-22,
+  esapp 0.2.1: `pw[Branch] = df` carrying `LineXFMR='YES'` warns and goes through —
+  `BranchDeviceType` flips `Line` → `Transformer`, on a 2-row subset, no exception. That
+  page has been rewritten accordingly.
+
+### Provenance
+
+Author feedback relayed by the author, 2026-09-08. Verified against the esapp 0.2.1 source
+(`github.com/lukelowry/ESApp`, `VERSION` 0.2.1, 2026-09-01) and diffed against the 0.1.3
+build then installed in site-packages. The readthedocs `api/saw.html` page states none of
+this — it documents `RunScriptCommand` neutrally and offers no preference, so this page is
+the only written record of the rule.
+
+
+---
+
 # ==== esapp.md ====
 
 ---
@@ -387,8 +863,8 @@ tags: [esapp, powerworld, simauto, python, tool]
 - **Up:** [Home](../index.md) · esapp package
 - **Across:** [powerworld-simauto](powerworld-simauto.md) · [esapp-overview](../methods/esapp-overview.md) · esa pp llm · time step simulation · dynamic line rating · reactive power planning · real power planning · synthetic creation · [gic](gic.md)
 - **Field schema + commands:** [esapp-schema-reference](../references/esapp-schema-reference.md) — exact object key/identifier fields + SimAuto command catalog for writing esapp code
-- **SCRIPT action catalog:** aux script catalog — full raw PowerWorld SCRIPT-command name index (344 actions), for anything not yet wrapped by a named SAW method
-- **House rule for calling them:** esapp script command wrappers — call `pw.esa.TimeStepDoRun()`, never `RunScriptCommand("TimeStepDoRun;")`; also the 0.2.1 change that made a bad write warn instead of raise
+- **SCRIPT action catalog:** aux script catalog — task-organized PowerWorld SCRIPT-command index (198 actions), for anything not yet wrapped by a named SAW method
+- **House rule for calling them:** [esapp-script-command-wrappers](esapp-script-command-wrappers.md) — call `pw.esa.TimeStepDoRun()`, never `RunScriptCommand("TimeStepDoRun;")`; also the 0.2.1 change that made a bad write warn instead of raise
 
 ## Content
 
@@ -465,7 +941,23 @@ Writes use the same brackets:
 pw[Gen, "GenMW"] = 100.0             # broadcast scalar to existing gens
 pw[Gen, "GenMW"] = [100, 150, 200]   # per-element list
 pw[Bus] = df                         # bulk update from a DataFrame (must carry primary keys)
+pw[Gen, "GenStatus"] = True          # bools are serialized -> "Closed" (0.2.1)
 ```
+
+**Status fields accept Python bools** as of 0.2.1 — `_serialize_bools` maps them through
+`BOOL_FIELD_VOCAB` (`components/gobject.py:39`), so you no longer have to remember which
+string a given field wants:
+
+| Field | `True` | `False` |
+|---|---|---|
+| `GenStatus`, `LineStatus`, `LoadStatus`, `SSStatus` | `Closed` | `Open` |
+| `BusStatus` | `Connected` | `Disconnected` |
+| `BusSlack`, `GenAGCAble`, `GenAVRAble` | `YES` | `NO` |
+
+Indexed variants resolve to their base name, so `LineStatus:1` works too. A bool aimed at
+an **unregistered** field raises `ValueError` rather than guessing — pass PowerWorld's
+string, or add the field to `BOOL_FIELD_VOCAB`. The plain strings still work everywhere,
+and most pages in this kit still use them.
 
 `pw[Type] = df` can also **create** objects when the case is in EDIT mode and
 the SAW was opened with `CreateIfNotFound=True`.
@@ -474,23 +966,59 @@ the SAW was opened with `CreateIfNotFound=True`.
 > `ValueError: Cannot set read-only field(s)` (`indexable.py:228`/`:280` in 0.1.x). They
 > now emit a `warnings.warn` and the write is **still attempted** — PowerWorld is treated
 > as the authority so a lagging generated schema can't block a newer Simulator's fields.
-> The cost: a field-name typo no longer raises. Run write-heavy code under
-> `python -W error::UserWarning`. See esapp script command wrappers.
+> The cost: a field-name typo no longer raises.
+> See [esapp-script-command-wrappers](esapp-script-command-wrappers.md).
+
+> 🚫 **Do not run `python -W error::UserWarning` to get the old strictness back.** That
+> advice was here through 2026-09-09 and it is wrong: esapp's read-only flag is a *stale
+> generated whitelist*, not PowerWorld truth, so promoting the warning to an error breaks
+> writes that work. Measured on Simulator build 2026-07-22, the count of fields PowerWorld
+> reports as enterable but `is_settable()` calls read-only: **112 on Branch, 33 on Bus,
+> 5 on Gen (including `GenMVR`), 1 on Load**. `pw[Branch, 'LineStatus'] = 'Open'` warns,
+> succeeds on all 3950 branches — and dies under `-W error`. PowerWorld's own answer for
+> `LineStatus` is *"Depends: Normally enterable except when field Lockout is YES"*; esapp
+> drops every conditional field. To check settability, ask PowerWorld, not the schema:
+>
+> ```python
+> fl = pw.esa.GetFieldList('branch')          # authoritative
+> fl[fl.internal_field_name == 'LineStatus'][['enterable']]
+> ```
+>
+> Catch typos by asserting the *effect* (read the field back and compare), which is the
+> rule everywhere else in this kit anyway.
 
 > ⚠️ **Key fields are mandatory for writes.** PowerWorld matches each row back to an
 > object by its **key field(s)** (e.g. `BusNum`+`GenID` for a Gen). The bracket read
 > includes the keys automatically, so a read-modify-write round-trip keeps them — but if
 > you build a DataFrame by hand, or drop columns, it **must still carry the key columns**
 > or the write silently does nothing (no error, no change applied). On the raw `esa`/SAW
-> path you must prepend them yourself: `pw.esa.get_key_field_list('gen') + [<fields>]`. Rule
-> of thumb: never strip key columns from a DataFrame you intend to push back.
+> path you must prepend them yourself: `Gen.keys() + [<fields>]` (or read them off
+> PowerWorld with `pw.esa.GetFieldList('gen')`, whose `key_field` column marks them
+> `*1*`, `*2*`, …). Rule of thumb: never strip key columns from a DataFrame you intend
+> to push back.
+>
+> `pw.esa.get_key_field_list(...)` does **not** exist — it was named here in error through
+> 2026-09-09 and raises `AttributeError`.
 
 ## PowerWorld API surface (`pw.*`, from workbench.py)
 
-- **State / case** — `pw.open()`, `pw.save(filename=None)`, `pw.close()`,
-  `pw.edit_mode()`, `pw.run_mode()`, `pw.flatstart()`, `pw.snapshot()`
+- **State / case** — `pw.open()`, `pw.save(filename=None)` ⚠️ **silent no-op, see below**,
+  `pw.close()`, `pw.edit_mode()`, `pw.run_mode()`, `pw.flatstart()`, `pw.snapshot()`
   (context manager: `SaveState` on enter, `LoadState` on exit),
   `pw.log(msg)`, `pw.print_log(...)`.
+
+> 🚫 **`pw.save()` writes nothing and reports success.** It is a one-line passthrough to
+> `self.esa.SaveCase(filename)`, so it inherits the `SaveCase` no-op documented in
+> [save-powerworld-case](../methods/save-powerworld-case.md) — this is the same trap, not
+> a second one. The no-op is below esapp: the raw COM call
+> `SimAuto.SaveCase(path, "PWB", True)` returns `('',)` (SimAuto's success convention) and
+> creates no file. Measured on build 2026-07-22, absolute path, both slash styles.
+> Use the script form and assert the file exists:
+>
+> ```python
+> pw.esa.RunScriptCommand(f'SaveCase("{out}", PWB);')
+> assert os.path.exists(out), "SaveCase reported success but wrote nothing"
+> ```
 - **Solve** — `pw.pflow(getvolts=True, method=SolverMethod.POLARNEWT)` returns a
   complex voltage Series; `pw.ts_solve(ctgs, fields)` runs transient stability
   and returns `(metadata, timeseries)` DataFrames.
@@ -815,14 +1343,14 @@ faster. On Synth8k: the full 13,050-outage table in **5.8 s** versus **1,101 s**
 10-worker parallel AC sweep ([parallel-contingency-solve](parallel-contingency-solve.md)). Read on for the mechanism, the
 free islanding detector that falls out of it, what it structurally cannot do (voltage,
 reactive power, losses, control limits, divergence), and the measured verdict that it was
-**evaluated and NOT adopted** for reactive power planning — because RPP's binding
+**evaluated and NOT adopted** for reactive power planning — because that work's binding
 constraint is local reactive adequacy, not MW redistribution.
 
 ## Connections
 
-- **Up:** Cross cutting MOC
-- **Used in:** reactive power planning — evaluated 2026-08-10 (`ctg/lodf_vs_ctg.ipynb`),
-  **measured and rejected** for the removal-stage screen; see the verdict below.
+- **Up:** [Home](../index.md)
+- **Measured in:** a reactive planning study, 2026-08-10, in a LODF-versus-contingency
+  comparison — **measured and rejected** for the removal-stage screen; see the verdict below.
 - **💡 Could apply to (idea transfer):**
   real power planning — its 70-iteration DCPF conductor-resizing loop is a *pure MW*
   problem, which is exactly LODF's home ground: N-1 flows for every candidate resize with no
@@ -911,7 +1439,7 @@ distributes it, giving a **220 MW max discrepancy**. LODF needs only base flows 
 so reading the base flows removes the question. A DC solve is still shunt-blind, so the
 property that makes this usable for siting work survives.
 
-### Measured verdict (Synth8k, `ctg/lodf_vs_ctg.ipynb`, 2026-08-10)
+### Measured verdict (Synth8k, 2026-08-10)
 
 **1 — LODF *is* DC contingency analysis, exactly.**
 
@@ -958,7 +1486,7 @@ Good enough to **rank**; not good enough to read a post-contingency loading numb
 
 ### UPDATE 2026-08-25 — the "does not compose" limitation is SOLVED in the literature
 
-2026 08 18 population b corridor collapse dropped LODF partly because *"single-row LODF does
+An earlier corridor-collapse study dropped LODF partly because *"single-row LODF does
 not compose across simultaneous outages, and 209 corridors go out together."* **That is true for
 chaining rank-1 updates one at a time — and that is not the only way to do it.**
 
@@ -989,11 +1517,11 @@ SHRINK a candidate list, then confirm the shortlist with a real solve.
 contingency remediation's DC subsystem. Its ~93 changes are all reactance perturbations on
 EXISTING corridors (measured: 42 single-circuit, 3 double), and its 454 rating bumps do not touch
 these matrices at all — a rating change moves no flow, only the limit you compare against. Both
-reasons LODF was rejected for RPP also **invert** there: that case has 482 corridors over 100%
+reasons LODF was rejected for reactive planning also **invert** there: that case has 482 corridors over 100%
 (worst 296%) rather than 2, and it is a DC study by design so DC's blindness costs it nothing.
 See `RESEARCH-2026-08-25.md` in that repo.
 
-### Why it was NOT adopted for RPP
+### Why it was NOT adopted for reactive power planning
 
 Two independent reasons, both measured — neither is "LODF is inaccurate":
 
@@ -1005,10 +1533,10 @@ Two independent reasons, both measured — neither is "LODF is inaccurate":
 2. **N-1 barely moves the ranking.** `Spearman(base-case stress, full-N-1 stress) = 0.8893` —
    the contingency dimension mostly reproduces the base-case stress signal already computed.
 
-And the structural reason it can never carry RPP's late stage: **LODF inherits all of DC's
+And the structural reason it can never carry that work's late stage: **LODF inherits all of DC's
 blindness** — no voltage (every bus pinned at 1.0 pu), no reactive power, no losses, no
 generator VAr limits / tap changes / switched-shunt action, and it can never return "did not
-converge," which is sometimes the physically meaningful answer. RPP's real violations are
+converge," which is sometimes the physically meaningful answer. Its real violations are
 69/138 kV low-side buses sagging from a **local MVAr deficit**; exact MW bookkeeping cannot
 see that. Voltage security still needs [parallel-contingency-solve](parallel-contingency-solve.md).
 
@@ -1027,11 +1555,38 @@ Each cost real time; all measured 2026-08-10.
   explicit script commands and verify: `SolvePowerFlow(DC);` vs
   `SolvePowerFlow(POLARNEWT);`. **The only unambiguous test is that a real DC solve pins every
   bus to exactly 1.0 pu** — check it, don't trust the flag.
-- **`Branch.LineStatus` is rejected as read-only** by esapp's bracket writer, *even in edit
-  mode* (`pw[Branch] = df` → `Cannot set read-only field(s)`). The `OpenBranch(...)` /
-  `Open(...)` script commands fail validation. What works:
-  `pw.esa.RunScriptCommand('SetData(Branch, [BusNum,BusNum:1,LineCircuit,LineStatus], [f,t,"ckt","Open"]);')`
-  — consistent with [powerworld-limitset-setdata](../methods/powerworld-limitset-setdata.md).
+- **esapp calls `Branch.LineStatus` read-only. esapp is wrong — but what that costs you
+  depends on your version.** `Branch.is_settable('LineStatus')` returns `False`, and that
+  flag is a stale generated whitelist, not PowerWorld's answer. PowerWorld's own
+  `GetFieldList('branch')` reports `enterable` as *"Depends: Normally enterable except when
+  field Lockout is YES"* — esapp's generator keeps only unconditional `Yes` fields and drops
+  every conditional one. Through 0.1.x that bad flag *blocked* the write: `pw[Branch] = df`
+  raised `Cannot set read-only field(s)`, which is what the 2026-08-10 runs above hit.
+
+  **On 0.2.1 it only warns** — `UserWarning: Read-only field(s) on Branch: ['LineStatus']` —
+  **and the write goes through.** ✅ **Verified live 2026-09-10** (~2,000-bus synthetic case, Simulator build
+  2026-07-22): `pw[Branch, 'LineStatus'] = 'Open'` opened all 3950 branches; the per-element
+  list form opened exactly the one branch intended. So the bracket writer is usable. The
+  real hazard is only that the warning scrolls past and looks like a failure when it isn't.
+
+  Do **not** apply the `-W error::UserWarning` mitigation that older revisions of this kit
+  suggested — it turns this false alarm into a hard failure on 112 `Branch` fields that
+  write fine. See [esapp](esapp.md) for the full count and
+  [esapp-script-command-wrappers](esapp-script-command-wrappers.md) for the 0.2.1 change.
+
+  If you would rather not have the warning in your logs at all, `SetData` is equivalent and
+  silent:
+
+  ```python
+  pw.esa.SetData("Branch", ["BusNum", "BusNum:1", "LineCircuit", "LineStatus"],
+                 [f, t, "ckt", "Open"])
+  ```
+
+  `SetData` is a typed wrapper in 0.2.1, so this obeys the call-the-named-method rule and is
+  consistent with [powerworld-limitset-setdata](../methods/powerworld-limitset-setdata.md).
+  `OpenBranch(...)` and `Open(...)` have no esapp wrapper at all and are reachable only as
+  `RunScriptCommand` strings. **Assert the effect whichever route you take** — read the
+  branch's status back, or check its flow went to zero. Never the absence of an exception.
 - **`pw.lodf(branch)` exists in esapp but is per-branch** — 13k COM round-trips. Build the
   matrix yourself.
 - **Always confirm the case solves before analysing it.** A freshly-opened `.pwb` returns
@@ -1043,6 +1598,210 @@ Each cost real time; all measured 2026-08-10.
   `mean |err| ≈ 0`. Measure error on the **flow change**, restricted to branches that actually
   moved, and against **each solver's own base** (mixing a DC base with an AC result folds the
   792 MW DC/AC gap into the thing being tested).
+
+
+---
+
+# ==== opf-preconditions.md ====
+
+---
+type: concept
+domain: tooling
+aliases: [SolvePrimalLP, DCOPF preconditions, OPF constraints, BGAGC, opf-area-control]
+tags: [powerworld, opf, dcopf, scopf, agc, cost-curve, gotcha, synthetic-grid]
+---
+
+# What an OPF needs before `SolvePrimalLP` will run at all
+
+## Abstract
+
+PowerWorld's LP OPF refuses to start unless **three** independent preconditions hold at
+once: some area under OPF control (`Area.BGAGC = "OPF"`), some generators AGC-able
+(`Gen.GenAGCAble = "YES"`), and those generators carrying a cost model that is not NONE.
+Miss any one and you get a fatal error, not a degraded solve — which is the good news,
+because the third condition is *data* and cannot be switched on honestly. Synthetic cases
+routinely ship with all three off, so this is the first wall any OPF work on that case
+family hits. This page records the three conditions, the confirmed field names and how
+they were confirmed, the integrity trap in "just set a cost model", and the DC power flow
+fallback that answers a thermal question without needing any of it. Verified 2026-09-11
+on a regional synthetic planning model, Simulator 24.
+
+## Connections
+
+- **Up:** [powerworld-simauto](powerworld-simauto.md) · esapp package · [Home](../index.md)
+- **Across:** [aux-only-powerworld](aux-only-powerworld.md) (how this was driven, and the provenance rule that
+  settled the field names) · [powerworld-inertia-and-cost-data](powerworld-inertia-and-cost-data.md) (the cost-curve
+  silent-zero traps) · [applying-a-dispatch-to-a-case](../methods/applying-a-dispatch-to-a-case.md) (same case family, AGC off) ·
+  artifact level validation
+- **Deeper:** [esapp-schema-reference](../references/esapp-schema-reference.md) · esa pp llm backend (the SCOPF call sequence)
+
+## Content
+
+### The error, and what it actually means
+
+```
+Fatal Error: No Areas or Super Areas set as OPF Constraints
+  To correct, on the OPF Area Records (or OPF Super Area Records) display
+  toggle the AGC Status field to "OPF" for some areas/super areas
+  Also, make sure some generators are set to AGC = YES and have a Cost Model
+  that is not NONE.
+```
+
+The headline names one condition; the message body names two more. All three are
+required. The OPF is not a solver you point at a case — it is a solver that optimises
+*specific controls under specific constraints*, and with none declared it has nothing to
+do and says so.
+
+| # | Condition | Field | Nature |
+|---|---|---|---|
+| 1 | an area (or super area) under OPF control | `Area.BGAGC` = `"OPF"` | switch |
+| 2 | generators the OPF may move | `Gen.GenAGCAble` = `"YES"` | switch |
+| 3 | those generators priced | `Gen.GenCostModel` ≠ NONE | **data** |
+
+### The field names, and how they were confirmed
+
+`BGAGC` is **not** in the *Auxiliary File Format* manual — nor is any other field name,
+because that manual carries no per-object catalog (see [aux-only-powerworld](aux-only-powerworld.md)). It was
+confirmed instead against esapp 0.2.1's generated schema, offline, without a PowerWorld
+session:
+
+```python
+from esapp.components import Area
+"BGAGC" in Area.fields()          # True  -- one of Area's 444 fields
+Area.is_editable("BGAGC")         # True
+Area.is_edit_mode_only("BGAGC")   # False -- writable in RUN mode, no EnterMode(EDIT)
+```
+
+`Gen.GenAGCAble`, `Gen.GenCostModel`, `Gen.GenCostCurvePoints` and `Gen.GenMCost` all
+confirm the same way: real, editable, not edit-mode-only.
+
+⚠ **`AGC_AGCStatus` is not an Area field.** It appears in this vault's prose
+([applying-a-dispatch-to-a-case](../methods/applying-a-dispatch-to-a-case.md)) as the area AGC-status field name and does not exist in
+esapp's schema. Do not use it. A field name read out of a prose page is a lead, not a fact
+— check it against the schema before writing it into a script.
+
+esapp declares no value vocabulary for `BGAGC`, so the literal `"OPF"` rests on
+PowerWorld's own error text. If a write does not take, read the field's current value back
+and match the spelling you see.
+
+In aux, with `ALL` as the filter keyword (`""` is not legal — see [aux-only-powerworld](aux-only-powerworld.md)):
+
+```
+SetData(Area, [BGAGC], ["OPF"], ALL);
+SetData(Gen, [GenAGCAble], ["YES"], ALL);
+```
+
+Then read both back before believing either. `SetData` reports success on writes that
+change nothing.
+
+### Condition 3 is data, and forcing it is a research-integrity failure
+
+Conditions 1 and 2 are switches and may be flipped freely — they change what the OPF is
+*allowed* to do, not what the answer is. Condition 3 is different. Setting `GenCostModel`
+to something non-NONE without real cost curves means inventing fuel costs, and the
+resulting dispatch is then driven entirely by fabricated numbers. It will look like an
+economic dispatch, produce a cost column, and mean nothing. **Check whether the case
+carries cost data; do not manufacture it.**
+
+Per [powerworld-inertia-and-cost-data](powerworld-inertia-and-cost-data.md), the guard is
+`GenCostCurvePoints > 0 AND GenMCost > 0`. `GenCostCurvePoints == 0` means no curve was
+ever fit and the cost fields read `0` — which is *no data*, never *free*. A handful of
+units can also report `GenMCost == 0` with curve points defined.
+
+Synthetic cases are the live hazard here. A generation pipeline may assign piecewise cost
+curves at build time, but whether they survived into the dated case you are holding is a
+question about that file, not about the pipeline — so measure it.
+
+**And the measurement can come back unsatisfiable.** On a ~9k-bus synthetic planning model,
+2026-09-11:
+
+| Field | Reading |
+|---|---|
+| `GenCostModel` | `"None"` on **every** unit |
+| `GenCostCurvePoints` | `0` on every unit |
+| `GenMCost` | zero nonzero values |
+| `GenAGCAble` | `"NO"` on all but one |
+| `Area.BGAGC` | one area, `"Off AGC"` |
+
+Conditions 1 and 2 were one `SetData` each. Condition 3 had nothing to switch on: the case
+simply carries no cost data. **DC OPF is therefore not available on that case at all** until
+cost models are populated upstream — not a tuning problem, not a settings problem, an
+absent-data problem. Budget for discovering this *before* designing a study around an OPF,
+because the recon that answers it costs seconds and the alternative is discovering it at the
+solve.
+
+This also fixes the shape of the value vocabulary: `BGAGC` reads back as the
+human-readable string `"Off AGC"`, spaces included, which makes `"OPF"` from PowerWorld's
+error text the right shape to write.
+
+### `Sim_Solution_Options` is the lowest-priority place to set a solve mode
+
+`SetData(Sim_Solution_Options, [DCApprox], [YES]);` is how the DC approximation gets set in
+an aux, and it works — but note the manual documents `Sim_Solution_Options` only as a
+SUBDATA section nested inside `Contingency`, `CTG_Options` and `QVCurve_Options`, never as a
+standalone `SetData` target. The shape is an analogy to the sibling `Equiv_Options` (which
+the manual explicitly says may be set "using the SetData action, or a DATA section"), not a
+citation.
+
+What the manual does settle is **precedence**, and it bites the moment OPF meets
+contingency analysis:
+
+The manual states that contingency analysis reads power flow solution options from three
+places, and applies them in this order of precedence:
+
+1. options stored on the individual contingency record
+2. options stored on the contingency tool (`CTG_Options`)
+3. the global solution options
+
+**Global solution options rank last.** Setting DC once at the top of an aux does not make it
+true during contingency analysis — anything the contingency record or `CTG_Options` carries
+overrides it. This is why esa pp llm backend's SCOPF sequence sets both
+`Sim_Solution_Options.DCApprox` *and* `CTG_Options.CTG_CalculationMethod`.
+
+### Always give the solve a failure handler
+
+`SolvePrimalLP` takes four optional arguments — a success slot, a failure slot, and two
+create-if-not-found flags — and either filename slot accepts the literal `STOP`, meaning
+halt all aux execution:
+
+```
+InitializePrimalLP("", STOP);
+SolvePrimalLP("", STOP);
+```
+
+Bare `SolvePrimalLP;` has no failure handler. A refused or non-converged OPF then becomes
+one line in the log while every later stage runs against an **unsolved case** and writes
+plausible numbers into correctly-named files. `SolveSinglePrimalLPOuterLoop` and
+`SolveFullSCOPF` carry the same slots. See [aux-only-powerworld](aux-only-powerworld.md).
+
+### Flipping condition 2 globally is blunt
+
+`GenAGCAble = "YES"` on every unit lets the OPF redispatch the entire fleet, including
+units that would never move in operation. Acceptable for a first look; narrow it before
+any result is reported.
+
+### The fallback that needs none of this
+
+If the question is *thermal* — what happens to branch loadings when an element is removed —
+a **DC power flow** answers it and requires no area control, no AGC flags and no cost data:
+
+```
+SetData(Sim_Solution_Options, [DCApprox], [YES]);
+SolvePowerFlow(DC);
+```
+
+What is lost versus a DC OPF is economic redispatch. On a case whose areas are off AGC
+and whose units are almost entirely not AGC-able, very little was being redispatched
+anyway, so the gap between the two is far smaller than it sounds.
+
+Two things to carry into the comparison:
+
+- **A DC solve pins every bus to exactly 1.0 pu** ([lodf](lodf.md)). So neither DC OPF nor DC
+  power flow yields any voltage answer — a before/after voltage table from a DC run is
+  identically zero change. Voltage requires an AC re-solve at the post-change dispatch,
+  compared against an AC baseline.
+- `pw.dc_mode` is effectively one-way ([lodf](lodf.md)); prefer the explicit script form above and
+  verify by checking that the bus voltages really did go to 1.0.
 
 
 ---
@@ -1066,7 +1825,7 @@ spawn workers here — it silently degrades to single-process serial), split the
 set into N chunks and run N independent `pwrworld.exe`/esapp instances as separate OS processes
 (Python `concurrent.futures.ProcessPoolExecutor`), each solving a plain serial `CTGSolveAll` on
 only its own chunk, then merge the per-bus voltage envelopes. Built for reactive power planning
-(`ctg/contingency_parallel.py`) to unblock the Synth8k N-1 sweep, which was timing out at 7200s
+to unblock a Synth8k N-1 sweep, which was timing out at 7200s
 (2 hrs) serial. Live-measured: **~6-7x faster on the 8k case** (18.4 min vs. the 2-hr timeout,
 13,470+ contingencies), but only **~1.7-1.8x on a smaller 2k case** (5,344 contingencies) — the
 speedup scales with per-contingency solve cost because each worker pays a fixed ~20-45 sec
@@ -1075,8 +1834,7 @@ speedup scales with per-contingency solve cost because each worker pays a fixed 
 ## Connections
 
 - **Up:** [Home](../index.md)
-- **Used in:** reactive power planning (`ctg/contingency_parallel.py`, see
-  reactive power planning backend)
+- **Used in:** a reactive planning study, as a parallel contingency-solve wrapper
 - **💡 Could apply to (idea transfer):** any PowerWorld study that leans on `CTGSolveAll` for a
   large N-k contingency set — dynamic line rating branch-outage screening, any N-k security
   study; more generally, any SimAuto/COM-driven batch analysis where PowerWorld's own distributed
@@ -1164,7 +1922,7 @@ for a big sweep.
 ### Scope limitation (deliberate)
 
 This technique parallelizes ONLY the base N-1 voltage sweep, not any per-contingency remediation
-walk that mutates a shared base fleet sequentially (e.g. RPP's after-removal 2b security loop) —
+walk that mutates a shared base fleet sequentially (e.g. an after-removal security loop) —
 that kind of loop can't be split this way since each fix changes state the next step depends on.
 It also does not autoinsert contingencies itself — the case must already carry its N-1 set before
 the parallel sweep opens it (autoinsert once, save, then hand that saved case path to the workers).
@@ -1195,15 +1953,14 @@ case-read normalized quantity with a synthesized or textbook one, and before tru
 "correct formula" recorded from a previous session.
 
 ## Connections
-- **Up:** Cross cutting MOC
+- **Up:** [Home](../index.md)
 - **Across:** [powerworld-inertia-and-cost-data](powerworld-inertia-and-cost-data.md) (the concrete `TSH` case) ·
-  llm coding discipline (sibling standing-default technique) · [esapp](esapp.md) ·
-  reactive power planning · load temp curve
-- **Used in:** dispatch — 2026 07 27 inertia basis regression,
-  2026 07 14 hrml dispatch corrections
-- **💡 Could apply to:** reactive power planning (syncon/SVC machine bases) ·
-  real power planning (per-unit r/x/b) · load temp curve (normalized load fraction —
-  per-zone vs whole-system denominator) · [gic](gic.md) · any study that sums or ranks a
+  [esapp](esapp.md)
+- **Found in:** a generator dispatch study — an inertia-basis regression, and a later round
+  of dispatch corrections with the same cause.
+- **💡 Applies to:** reactive planning (synchronous-condenser and SVC machine bases) ·
+  real-power planning (per-unit r/x/b) · normalized load fractions, where the per-zone and
+  whole-system denominators differ · [gic](gic.md) · any study that sums or ranks a
   normalized quantity across heterogeneous equipment
 
 ## Content
@@ -1239,10 +1996,9 @@ Both expressions are "inertia in seconds." Neither is wrong. They are not interc
 On the Synth8k case `GenMVABase` spans **2.2 – 1,444.4 MVA (median 170)**, so treating
 assumed H as if it were `TSH` produced failure shape **2**: fleet inertia read 240.5 GW·s
 instead of 470.3, nuclear 2.04 instead of 22.58, and the unit-commitment order in the
-dispatch algorithm was silently wrong. Full numbers in
-2026 07 27 inertia basis regression.
+dispatch algorithm was silently wrong.
 
-The physical statement underneath: **H alone is not an inertia quantity.** ERCOT defines
+The physical statement underneath: **H alone is not an inertia quantity.** System inertia is
 `M_sys = Σ Hᵢ · MVAᵢ`. Seconds must be size-weighted before they mean anything at system
 level — which is also why *unit count is not a proxy for system inertia*.
 
@@ -1315,28 +2071,26 @@ tags: [powerworld, inertia, cost-curve, dynamics, gotcha]
 ## Abstract
 
 Four non-obvious PowerWorld/esapp case-data facts, all discovered the hard way while
-building dispatch's HRML algorithm and worth knowing before any project touches
+building a generator dispatch algorithm and worth knowing before any project touches
 generator inertia or cost data: (1) `Gen.TSH` is H on a **100 MVA system base**, not
 the generator's own `GenMVABase` — **and the "don't multiply by `GenMVABase`" rule that
 follows from it inverts the moment you synthesize H yourself instead of reading it**
 (this bit a second time on 2026-07-27; see the ⛔ box in §1 before writing any inertia
 code); (2) `Gen.GenMCost` is a **live** cost-curve
-evaluation at the case's *current* `GenMW`, not a fixed per-unit rate; (3) ERCOT's 8
-weather zones are already modeled natively as `AreaNum`/`AreaName` on Synth2k-series
-cases — no spatial join needed; (4) a sibling project's fuel-category *name* doesn't
+evaluation at the case's *current* `GenMW`, not a fixed per-unit rate; (3) a system's official
+zonal scheme may already be modelled natively as `AreaNum`/`AreaName`, in which case no
+spatial join is needed; (4) a sibling project's fuel-category *name* doesn't
 always match its actual `GenFuelType` mapping — verify against source code, not the
 label. Read the Content section before writing any code that sums inertia, ranks
 generators by cost, needs zonal load data on a Synth2k case, or reconstructs
 per-generator detail from another project's category-level summary.
 
 ## Connections
-- **Up:** Cross cutting MOC
-- **Across:** [esapp](esapp.md) · [powerworld-simauto](powerworld-simauto.md) · dispatch (where this was found) · data inputs root ·
-  2026 07 14 hrml scenario validation (fuel-mapping trap below) ·
-  [per-unit-basis-discipline](per-unit-basis-discipline.md) (the transferable rule) ·
-  2026 07 27 inertia basis regression (where §1's wording failed in practice)
-- **Deeper:** none yet — see `.omc/plans/2026-07-14-inertia-basis-correction.md` in
-  the dispatch repo for the full numeric derivation and worked examples.
+- **Up:** [Home](../index.md)
+- **Across:** [esapp](esapp.md) · [powerworld-simauto](powerworld-simauto.md) ·
+  [per-unit-basis-discipline](per-unit-basis-discipline.md) (the transferable rule)
+- **Found in:** a generator dispatch study, where §1's original wording failed in practice
+  and the fuel-mapping trap below cost a rebuild.
 
 ## Content
 
@@ -1349,9 +2103,9 @@ inertia constant on the generator's own MVA base — it's H expressed on a fixed
 independent ways on a real Synth2k case:
 
 - **Round-number test:** converting via `H = TSH * 100 / GenMVABase` lands every
-  nuclear unit and 19/21 coal units on exactly `4.00` seconds, squarely inside
-  ERCOT's published Table 1 ranges (Nuclear 3.8–4.34s, Coal 2.9–4.5s) — not a
-  coincidence at that precision.
+  nuclear unit and nearly every coal unit on exactly `4.00` seconds, squarely inside
+  the published per-technology ranges operators tabulate (nuclear and coal both sit
+  around 3–4.5 s) — not a coincidence at that precision.
 - **Direct cross-check:** the case's own `MachineModel_GENROU` (round-rotor) and
   `MachineModel_GENSAL` (salient-pole, e.g. hydro) dynamic model objects expose a
   `TSH` field of their own, and it reads the true per-unit H **directly, no
@@ -1372,7 +2126,7 @@ unit.
 >
 > **"Do NOT multiply by `GenMVABase`" holds only because real `Gen.TSH` has already been
 > multiplied by it.** That is a property of *the field*, not of inertia. If you are
-> **synthesizing** H yourself — assumed values from ERCOT's Table 1, a textbook, or any
+> **synthesizing** H yourself — assumed values from an operator's published table, a textbook, or any
 > per-machine source — H is on the **machine's own base** and you **MUST** multiply:
 >
 > ```python
@@ -1381,14 +2135,13 @@ unit.
 > ```
 >
 > Writing assumed H straight into a column named `TSH` silently asserts every generator is
-> 100 MVA. **This exact regression happened** on 2026-07-27 in dispatch, on a Synth8k
+> 100 MVA. **This exact regression happened** on 2026-07-27, on a Synth8k
 > case with *no* measured `TSH` — so all three notebook builders took the assumed-data path,
 > which this page's original wording did not cover. Fleet inertia came out 240.5 GW·s
 > instead of 470.3, nuclear 2.04 instead of 22.58; and because the error scales with machine
 > size it was **non-uniform**, so unit *commitment order* was wrong too, not just totals.
-> Full trace: 2026 07 27 inertia basis regression.
 >
-> Physically: **H alone is not an inertia quantity.** ERCOT defines system inertia as
+> Physically: **H alone is not an inertia quantity.** System inertia is defined as
 > `M_sys = Σ Hᵢ · MVAᵢ` — seconds must be weighted by machine size before they mean anything
 > at system level. Corollary for any downstream analysis: **unit count is not a proxy for
 > inertia**; many small machines can carry less than a few large ones.
@@ -1440,34 +2193,188 @@ curve points defined. Both mean "no real cost data," never "free" — guard expl
 (`GenCostCurvePoints > 0 AND GenMCost > 0`) before using cost data to rank or select
 generators, or a data gap silently becomes "dispatch this first."
 
-### 3. ERCOT's 8 weather zones are already `AreaNum`/`AreaName`
+### 3. Check `AreaNum`/`AreaName` before doing a spatial join
 
-On Synth2k-series cases, `AreaNum`/`AreaName` (native PowerWorld fields, on both
-`Gen` and `Load` objects) already encode ERCOT's 8 official weather zones — Far West,
-North, West, South, North Central, South Central, Coast, East — verified present and
-fully populated on both the summerpeak and low-load Synth2k cases. No spatial join
-needed for zonal load/generation analysis on this case family.
+`AreaNum`/`AreaName` are native PowerWorld fields carried on **both `Gen` and `Load`**
+objects, and a case is often built with the system operator's own zonal scheme already
+encoded in them. Verify that before writing any geographic join: where it is populated,
+zonal load and generation analysis needs no spatial work at all.
 
-Don't confuse this with the separate **ISO-region** field (`CustomString:2`, written
-by a case-specific `iso_insertion.py` spatial join against an ISO-boundary shapefile)
-— that field is (a) generator-scoped only, never written to loads, and (b) on the
-Synth2k case, ~96%/~4%/~0.06% across three ISO regions — one bucket dominates, nearly
-useless for zonal differentiation within ERCOT. `AreaNum` is the right key when the
-goal is *intra-ERCOT* zonal granularity (e.g. matching a MIN-load case's zonal load
-shape); ISO region is the right key only when the analysis genuinely needs
-separation between ISO regions.
+Don't confuse it with a **custom region field** — typically something like
+`CustomString:2`, written by a case-specific spatial join against a boundary shapefile.
+Two things regularly make such a field the wrong key: it is usually **generator-scoped
+only**, never written to loads, and its distribution can be so dominated by a single
+bucket that it differentiates nothing. Check the value distribution before you group by
+it. `AreaNum` is the right key for zonal granularity *inside* one system; a region field
+is right only when the analysis genuinely spans regions.
 
-### 4. A sibling project's fuel-category name doesn't always mean what it says
+### 4. Another project's fuel-category name doesn't always mean what it says
 
 Not a PowerWorld field-semantics gotcha but the same *don't-take-a-label-at-face-value*
-family: a sibling dispatch script's `"GAS_CT"` category actually maps to Synth8k's
+family: a companion dispatch script's `"GAS_CT"` category actually maps to Synth8k's
 `GenFuelType == "DFO (Distillate Fuel Oil)"`, not `"NG (Natural Gas)"` — confirmed by
 reading the source's own fuel-classification code, not inferred from the name.
-Conflating the two misassigns `TSH`/cost and mis-totals capacity. See
-2026 07 14 hrml scenario validation for the full trace. General lesson: when
+Conflating the two misassigns `TSH`/cost and mis-totals capacity. General lesson: when
 reconstructing per-generator detail from another project's per-category summary
 output, verify the category↔`GenFuelType` mapping against that project's actual
 classification code, never the category's plain-English name.
+
+
+---
+
+# ==== powerworld-script-transfer.md ====
+
+---
+type: concept
+domain: tooling
+aliases: [script-transfer, drop-file-aux, SimulatorScriptInput, SimulatorScriptOutput, external-script-control, sced]
+tags: [powerworld, aux, script, external-program, llm, simulator-25, undocumented]
+---
+
+# Drop-file script transfer: driving Simulator without SimAuto
+
+## Abstract
+
+Simulator 25 beta can watch a directory and execute any `.aux` dropped into it, writing
+back the message-log slice produced by that load. Write a file, read a file — **no COM and
+no SimAuto call of your own.** This is the cheapest channel an external program (an LLM
+among them) has ever had into PowerWorld, and it needs nothing installed on the caller's
+side.
+
+**The deck goes further and says it therefore needs no SimAuto licence. That is the deck's
+claim, and it is untested.** Every run behind this page was made on a machine that *has*
+the add-on, so nothing measured here could have falsified it. The script actions a dropped
+file executes are the same action set SimAuto invokes, so where the licence check actually
+sits is an open question. **Do not repeat it as a benefit** until someone has run a drop on
+a Simulator without the add-on installed.
+
+**It is not in the *Auxiliary File Format* manual.** Searched 2026-09-12 against the
+September 1, 2026 edition: zero hits for `ScriptTransfer`, `SimulatorScriptInput`,
+`SimulatorScriptOutput`, `ScriptInputOutputPollSec` and "drop file". The only source is
+Overbye's September 2026 slide deck *Recent Modifications to PowerWorld Simulator to Allow
+for More Interaction with External Programs*, which describes the functionality as new and
+"probably evolving". Everything below is from that deck; nothing here is measured yet.
+
+## Connections
+
+- **Up:** [powerworld-simauto](powerworld-simauto.md) · [Home](../index.md)
+- **Across:** [aux-only-powerworld](aux-only-powerworld.md) (what to write *inside* the dropped file — every trap
+  and the read-back rule apply unchanged) · [aux-script-commands](../references/aux-script-commands.md) ·
+  [esapp-script-command-wrappers](esapp-script-command-wrappers.md) (the Python-side channel this one bypasses)
+- **Deeper:** [esapp-schema-reference](../references/esapp-schema-reference.md) (field-name provenance — still mandatory here)
+
+## Content
+
+### What it does
+
+With the feature enabled, every `ScriptInputOutputPollSec` Simulator checks the configured
+directory for a file named exactly **`SimulatorScriptInput.aux`**. If it is there:
+
+1. the aux file is **loaded** (i.e. executed — unnamed `SCRIPT{}` blocks auto-run, see
+   [aux-only-powerworld](aux-only-powerworld.md)),
+2. the input file is **deleted**,
+3. **`SimulatorScriptOutput.txt`** is written into the same directory, containing the new
+   message-log entries associated with that load.
+
+That is the whole protocol. Request is a file appearing; response is a file appearing; the
+deletion of the request is the acknowledgement.
+
+### Turning it on
+
+Two preconditions the deck states explicitly, and both are real constraints rather than
+setup steps: **a case must already be loaded**, and **the Script Command Execution Dialog
+(SCED) must be visible**. Tools → Script opens it.
+
+In the SCED:
+
+| Field | Registry name (PowerWorld section) |
+|---|---|
+| Enabled External Script Control | `ScriptTransferFileEnabled` |
+| ScriptTransferFileDirectory | `ScriptTransferFileDirectory` |
+| Script File Poll Interval | `ScriptInputOutputPollSec` |
+
+Settings persist in the registry, so this is configurable ahead of a session rather than
+only through the dialog.
+
+### The shape of a request
+
+From the deck's worked example, on PowerWorld's own shipped `B7Flat` case:
+
+```
+// First change the generator status
+DATA (Gen [ObjectID, STATUS])
+{
+"Gen 1 '1'" "Open"
+}
+// Then solve the power flow
+SCRIPT{SolvePowerFlow;}
+```
+
+Two things to copy from this rather than invent:
+
+- **`DATA` + `ObjectID` is a compact one-field key.** `"Gen 1 '1'"` identifies the unit
+  without a separate `BusNum`/`GenID` pair. The manual documents `ObjectID` as an
+  identifier form on several commands, so this is not deck-only syntax.
+- **A single dropped file mixes `DATA` and `SCRIPT` blocks and they run in file order.**
+  The edit lands, then the solve runs against it.
+
+The corresponding `SimulatorScriptOutput.txt` is the raw log slice — `1 records read from
+file.`, the AGC adjustments, the mismatch iterations, `Simulation: Successful Power Flow
+Solution`, bracketed by `Starting load of auxiliary file:` and `Finished load of auxiliary
+file:` lines.
+
+### Write it elsewhere, then copy it in
+
+The deck says to create `SimulatorScriptInput.aux` and "store it somewhere other than in
+this directory", then copy it into the watched directory. Treat that as mandatory. The
+poller has no way to tell a finished file from one still being written, so authoring in
+place races the poll interval and can feed Simulator half an aux — which, given that a
+truncated script is still a *valid* script up to the truncation point, is the silent
+failure this whole vault exists to prevent.
+
+An atomic move within the same volume is the safer version of the same idea.
+
+### What it does not give you
+
+The output is a **log transcript, not a return value.** `SolvePowerFlow` succeeding or
+failing shows up as English in a text file, not as a status your caller can branch on
+without parsing. So:
+
+- **The read-back discipline from [aux-only-powerworld](aux-only-powerworld.md) applies unchanged.** If the
+  answer matters, `SaveData` it to a CSV and read the CSV. Do not infer success from the
+  output file merely existing.
+- `Simulation: Successful Power Flow Solution` is the string worth grepping for, but its
+  absence is not the same as a specific diagnosis.
+- This is **not headless**. A visible GUI dialog is required, so it does not replace
+  [esapp](esapp.md) for batch or parallel work — see [parallel-contingency-solve](parallel-contingency-solve.md).
+
+### Open questions to settle by experiment
+
+None of these are answered by the deck, and each one changes how a caller must be written:
+
+- Is `SimulatorScriptOutput.txt` **overwritten or appended** on each cycle?
+- Is there any signal that the output file is **complete**, or must the caller poll for
+  size stability?
+- What happens when the aux **fails to parse** — is an output file written at all, and does
+  the input file still get deleted?
+- Does `StopAuxFile` or `ExitProgram` inside a dropped file behave sanely here?
+- What is the **minimum usable poll interval**, and does a short one cost anything?
+- Does a second `SimulatorScriptInput.aux` dropped mid-execution get picked up, queued, or
+  lost?
+
+### Version floor
+
+**The deck states Simulator 25 beta with a build date at or after September 19, 2026.**
+
+**A measurement disagrees with that floor and has not been reconciled.** On 2026-09-21 the
+channel was exercised end to end — dozens of drops, every one consumed and answered — on an
+install whose own `CaseSummaryGet` output reports `EXE Build Date: 25 beta September 12,
+2026`, a week before the stated floor.
+
+Two readings, and nothing here settles which: the floor is conservative, or the string the
+EXE reports is not the build date the deck means. Until someone checks, **treat the deck's
+date as the number to quote and the measurement as the reason not to tell anyone their build
+is too old** — a build reporting an earlier date may well work. See [version-requirements](version-requirements.md).
 
 
 ---
@@ -1490,7 +2397,7 @@ SimAuto is PowerWorld Simulator's COM Automation Server — the Windows-only lay
 ## Connections
 
 - **Up:** [Home](../index.md)
-- **Across:** [esapp](esapp.md) · esapp package · [esapp-overview](../methods/esapp-overview.md) · esa pp llm · aux script catalog · esapp script command wrappers (named wrapper over `RunScriptCommand`, the house rule)
+- **Across:** [esapp](esapp.md) · esapp package · [esapp-overview](../methods/esapp-overview.md) · esa pp llm · aux script catalog · [esapp-script-command-wrappers](esapp-script-command-wrappers.md) (named wrapper over `RunScriptCommand`, the house rule)
 
 ## Content
 
@@ -1896,9 +2803,8 @@ tags: [version, compatibility, simulator, simauto, requirements, preflight]
 
 Which PowerWorld version you need, how to find out which one you have, and what this
 knowledge base was verified against. Everything here was tested on **Simulator 24, build
-24.2026.7.22** — 13 of 14 feature areas confirmed working. Version matters more than it
-looks: field availability and script-action behaviour both shift between releases, and
-they shift *silently*.
+24.2026.7.22** — 13 of 14 feature areas confirmed working. Field availability and
+script-action behaviour both shift between releases, and they shift *silently*.
 
 ## Connections
 
@@ -1950,7 +2856,7 @@ is authoritative; the version-numbered keys are not.
 | | |
 |---|---|
 | **Simulator** | 24, build `24.2026.7.22` |
-| **`esapp`** | 0.1.3 |
+| **`esapp`** | 0.1.3 — what the pages here were live-tested against. 0.2.1 is current and changes write behaviour; see [esapp-script-command-wrappers](esapp-script-command-wrappers.md) |
 | **`TeamOverbyeWeather`** | 0.4.0 |
 | **Python** | 3.13, 64-bit |
 | **Platform** | Windows |

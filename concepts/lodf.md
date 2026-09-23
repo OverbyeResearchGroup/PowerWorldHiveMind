@@ -17,7 +17,7 @@ faster. On Synth8k: the full 13,050-outage table in **5.8 s** versus **1,101 s**
 10-worker parallel AC sweep ([parallel-contingency-solve](parallel-contingency-solve.md)). Read on for the mechanism, the
 free islanding detector that falls out of it, what it structurally cannot do (voltage,
 reactive power, losses, control limits, divergence), and the measured verdict that it was
-**evaluated and NOT adopted** for reactive power planning — because RPP's binding
+**evaluated and NOT adopted** for reactive power planning — because that work's binding
 constraint is local reactive adequacy, not MW redistribution.
 
 ## Connections
@@ -191,11 +191,11 @@ SHRINK a candidate list, then confirm the shortlist with a real solve.
 contingency remediation's DC subsystem. Its ~93 changes are all reactance perturbations on
 EXISTING corridors (measured: 42 single-circuit, 3 double), and its 454 rating bumps do not touch
 these matrices at all — a rating change moves no flow, only the limit you compare against. Both
-reasons LODF was rejected for RPP also **invert** there: that case has 482 corridors over 100%
+reasons LODF was rejected for reactive planning also **invert** there: that case has 482 corridors over 100%
 (worst 296%) rather than 2, and it is a DC study by design so DC's blindness costs it nothing.
 See `RESEARCH-2026-08-25.md` in that repo.
 
-### Why it was NOT adopted for RPP
+### Why it was NOT adopted for reactive power planning
 
 Two independent reasons, both measured — neither is "LODF is inaccurate":
 
@@ -207,10 +207,10 @@ Two independent reasons, both measured — neither is "LODF is inaccurate":
 2. **N-1 barely moves the ranking.** `Spearman(base-case stress, full-N-1 stress) = 0.8893` —
    the contingency dimension mostly reproduces the base-case stress signal already computed.
 
-And the structural reason it can never carry RPP's late stage: **LODF inherits all of DC's
+And the structural reason it can never carry that work's late stage: **LODF inherits all of DC's
 blindness** — no voltage (every bus pinned at 1.0 pu), no reactive power, no losses, no
 generator VAr limits / tap changes / switched-shunt action, and it can never return "did not
-converge," which is sometimes the physically meaningful answer. RPP's real violations are
+converge," which is sometimes the physically meaningful answer. Its real violations are
 69/138 kV low-side buses sagging from a **local MVAr deficit**; exact MW bookkeeping cannot
 see that. Voltage security still needs [parallel-contingency-solve](parallel-contingency-solve.md).
 
@@ -229,17 +229,27 @@ Each cost real time; all measured 2026-08-10.
   explicit script commands and verify: `SolvePowerFlow(DC);` vs
   `SolvePowerFlow(POLARNEWT);`. **The only unambiguous test is that a real DC solve pins every
   bus to exactly 1.0 pu** — check it, don't trust the flag.
-- **`Branch.LineStatus` is not settable through the bracket writer, and what that costs you
-  depends on your esapp version.** esapp's schema marks it read-only (`Branch.is_settable`
-  returns `False`). Through 0.1.x, `pw[Branch] = df` raised `Cannot set read-only field(s)`,
-  which is what the 2026-08-10 runs above hit. **On 0.2.1 it only warns** — `UserWarning:
-  Read-only field(s) on Branch: ['LineStatus']` — **and attempts the write regardless.** That
-  is the more dangerous shape of the two: the warning scrolls past and you cannot tell from
-  the call whether the status actually changed. See
-  [esapp-script-command-wrappers](esapp-script-command-wrappers.md) for the change and for
-  the `python -W error::UserWarning` mitigation that turns it back into a failure.
+- **esapp calls `Branch.LineStatus` read-only. esapp is wrong — but what that costs you
+  depends on your version.** `Branch.is_settable('LineStatus')` returns `False`, and that
+  flag is a stale generated whitelist, not PowerWorld's answer. PowerWorld's own
+  `GetFieldList('branch')` reports `enterable` as *"Depends: Normally enterable except when
+  field Lockout is YES"* — esapp's generator keeps only unconditional `Yes` fields and drops
+  every conditional one. Through 0.1.x that bad flag *blocked* the write: `pw[Branch] = df`
+  raised `Cannot set read-only field(s)`, which is what the 2026-08-10 runs above hit.
 
-  Be explicit instead of relying on either behaviour:
+  **On 0.2.1 it only warns** — `UserWarning: Read-only field(s) on Branch: ['LineStatus']` —
+  **and the write goes through.** ✅ **Verified live 2026-09-10** (~2,000-bus synthetic case, Simulator build
+  2026-07-22): `pw[Branch, 'LineStatus'] = 'Open'` opened all 3950 branches; the per-element
+  list form opened exactly the one branch intended. So the bracket writer is usable. The
+  real hazard is only that the warning scrolls past and looks like a failure when it isn't.
+
+  Do **not** apply the `-W error::UserWarning` mitigation that older revisions of this kit
+  suggested — it turns this false alarm into a hard failure on 112 `Branch` fields that
+  write fine. See [esapp](esapp.md) for the full count and
+  [esapp-script-command-wrappers](esapp-script-command-wrappers.md) for the 0.2.1 change.
+
+  If you would rather not have the warning in your logs at all, `SetData` is equivalent and
+  silent:
 
   ```python
   pw.esa.SetData("Branch", ["BusNum", "BusNum:1", "LineCircuit", "LineStatus"],

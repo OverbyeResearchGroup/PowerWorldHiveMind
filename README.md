@@ -37,10 +37,15 @@ reject. In [the remediation demo](demos/violation-remediation.md), two of five p
 reinforcements made the system worse, including the one an engineer would pick first.
 You only find that out by measuring it.
 
-This repository is a knowledge base: 44 linked markdown files about driving PowerWorld
+This repository is a knowledge base: 87 linked markdown files about driving PowerWorld
 Simulator from Python. The kit itself is markdown, with nothing to build or run. It needs
 two Python packages, which your agent installs. Point your assistant at it and it starts
 writing PowerWorld code that works instead of code that looks plausible.
+
+It writes back, too. Say *"write that up as a page"* and your agent files what you
+worked out into your own copy, in the same shape as every page here. Your clone does
+not sync back to this repository, so what you add stays yours. See
+[Add to it](#add-to-it).
 
 Hand it a case file and ask a question in plain English:
 
@@ -126,8 +131,9 @@ installed Python or used an AI coding agent.
 This depends on which route you took, and the two are not the same.
 
 **On the plugin route**, a plugin ships skills and commands, not instruction files. Claude
-Code loads `skills/powerworld/SKILL.md` and registers `/powerworld-hivemind:powerworld-setup`. It does **not**
-load `CLAUDE.md` or `AGENTS.md` from the plugin. `SKILL.md` carries the rules that matter
+Code loads `skills/powerworld/SKILL.md` and `skills/knowledge-base-page/SKILL.md`, and
+registers `/powerworld-hivemind:powerworld-setup` and `/powerworld-hivemind:kb-page`. It
+does **not** load `CLAUDE.md` or `AGENTS.md` from the plugin. `SKILL.md` carries the rules that matter
 and points at the pages; the routing table in `AGENTS.md` stays on disk for the agent to
 open when it needs it.
 
@@ -218,6 +224,36 @@ Simulator. The exception is fetching and inspecting weather data, which is pure 
 see [methods/teamoverbyeweather-client.md](methods/teamoverbyeweather-client.md). But
 *applying* that weather requires PowerWorld, since TimeStep runs inside Simulator.
 
+### Talking to PowerWorld in files instead of function calls
+
+There is a second way to work. It changes the shape of the conversation rather than the
+speed of it.
+
+Turn on one setting and Simulator starts watching a folder. Drop a `.aux` script into that
+folder and it runs it, then writes the log back out as a text file. Write a file, read a
+file. Nothing of yours talks to PowerWorld.
+
+That draws a boundary around PowerWorld, not around code. Your agent still writes and runs
+plenty of it: checking the script before it drops it, watching for the run to finish, and
+reading the result CSVs, because the log is prose and the answers are in the CSVs. Code on
+your side, files across the boundary.
+
+Your agent can work this way. It writes the script, you drop it in, and the results come
+back as CSV files you both read. You see every script before it runs, everything either side
+produces is a file you can read, diff and archive, and you end up with a script you own and
+can re-run rather than a transcript of an API session that happened once.
+
+[methods/aux-file-mode.md](methods/aux-file-mode.md) has the setup steps, the rules, and a
+working template that opens a bus and measures what that did to the system.
+
+It is the slower path, and it costs you two things. It is not headless: a dialog has to stay
+open, so it will not batch or run in parallel. And a script that fails the wrong way is never
+cleaned up, so Simulator re-runs it every poll interval until you delete the file yourself.
+Both are on the page, along with the three commands that will silently ruin a run.
+
+Recent builds only; see
+[concepts/version-requirements.md](concepts/version-requirements.md).
+
 ## What it covers
 
 | Area | Pages |
@@ -230,6 +266,8 @@ see [methods/teamoverbyeweather-client.md](methods/teamoverbyeweather-client.md)
 | PowerWorld weather features | The PWW format, and fetching `.pww` files with the TeamOverbyeWeather client |
 | Timestep simulation | Driving PowerWorld's TimeStep feature for hourly renewable output, and reading the result CSVs |
 | Script actions | 198 PowerWorld SCRIPT commands, organized by task |
+| **Working without a SimAuto licence** | **Driving Simulator by dropping `.aux` files into a watched folder: the setup, the rules, and a template** |
+| **Writing it down** | **Adding what you worked out as a new page, in the shape the rest of the kit uses** |
 
 Full catalogue: **[index.md](index.md)**
 
@@ -258,6 +296,58 @@ list of what actually goes wrong, written so an assistant reads the warning at t
 moment it is about to make the mistake.
 
 ---
+
+## Add to it
+
+The kit is a knowledge base you are meant to **grow**, not just read. Anything you
+work out in a session and leave in the chat is gone when the session ends.
+
+**Just say so in plain English.** The agent loads the page-writing skill on its own:
+
+> *write that up as a page*
+> *save what we just worked out*
+> *add a page about how the filter expression language handles nested groups*
+> *document this gotcha before I forget it*
+
+**Or call it directly:**
+
+```
+/powerworld-hivemind:kb-page
+```
+
+The `powerworld-hivemind:` prefix is part of the name, same as the setup command.
+
+**Not using the plugin?** Tell your agent to read
+[skills/knowledge-base-page/SKILL.md](skills/knowledge-base-page/SKILL.md). It is
+one self-contained markdown file with no dependencies — nothing to install and no
+script to run.
+
+### What it will do
+
+1. **Search first.** If a page already covers the topic it edits that page rather
+   than adding a second one. Two pages on one subject is the failure this base
+   exists to avoid.
+2. **File it** in `concepts/` (what a thing is), `methods/` (how to do a thing),
+   `references/` (a code or API surface) or `demos/` (a worked run).
+3. **Write the house shape** — frontmatter, then `## Abstract`, `## Connections`,
+   `## Content`, with relative markdown links to related pages.
+4. **Add the `index.md` row**, so the page is findable. A page nobody can find is a
+   page nobody reads.
+
+Ask it to *check the base* instead and it runs two one-line checks — which pages
+have no `index.md` row, and which links point at a file that does not exist.
+
+Your copy is yours. A clone does not sync back here, so pages you add stay in your
+repo and nothing you write is published anywhere. If you do want a page upstream,
+open a pull request.
+
+## See it as a graph
+
+Open the repository folder as a vault in [Obsidian](https://obsidian.md) — *Open folder
+as vault*, then **Ctrl/Cmd+G** — to see the 47 pages and the links between them.
+Nothing to install or convert. The repo ships `.obsidian/graph.json`, so the graph
+arrives coloured by folder with `index.md` filtered out, since it links to every page
+and would swamp the view.
 
 ## Credits and contributing
 
