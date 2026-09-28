@@ -373,8 +373,9 @@ the eight rules that fail silently.
 
 ## Running
 
-Apart from the install steps above, users run nothing from this repository: the agent
-reads the pages. The one script in the repository, `build_dist.py`, is for maintainers.
+Apart from the install steps and the slash commands above, users run no script from this
+repository: the agent reads the pages. The one script in the repository, `build_dist.py`,
+is for maintainers.
 It rebuilds the files in [`dist/`](dist/): the single-file bundles and the skill zip for
 chat tools that cannot clone a repository.
 
