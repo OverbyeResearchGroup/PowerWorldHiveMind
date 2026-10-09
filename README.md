@@ -81,6 +81,7 @@ Full list in [CHANGELOG.md](CHANGELOG.md).
 | The agent team and its rules | [docs/agents/README.md](docs/agents/README.md) |
 | To file what you worked out as a new page | say *"write that up as a page"*, or [skills/knowledge-base-page/SKILL.md](skills/knowledge-base-page/SKILL.md) |
 | To see the pages as a graph offline | open the folder as an [Obsidian](https://obsidian.md) vault and press Ctrl/Cmd+G |
+| To rebuild `dist/` after editing pages | [MAINTAINING.md](MAINTAINING.md) |
 | You are an agent | [AGENTS.md](AGENTS.md) |
 
 <details>
