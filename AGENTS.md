@@ -38,7 +38,7 @@ knew.
 
 ## How to find the page — and how much of it to read
 
-The kit is 47 pages — 20 in `concepts/`, 16 in `methods/`, 7 in `demos/`, 4 in
+The kit is 50 pages — 20 in `concepts/`, 18 in `methods/`, 8 in `demos/`, 4 in
 `references/` — and you will need three to five of them. The ladder below is about
 **finding** the right page cheaply. It is not a budget on how much of that page you read.
 
@@ -61,8 +61,7 @@ The kit is 47 pages — 20 in `concepts/`, 16 in `methods/`, 7 in `demos/`, 4 in
    - **Cursor** — project-wide find (Ctrl+Shift+F), or a codebase search scoped to those
      four directories.
    - **Windows with neither `rg` nor `grep`** — PowerShell:
-     `Select-String -Pattern "SaveCase" -Path $KIT\concepts\*.md,$KIT\methods\*.md,$KIT\demos\*.md,$KIT
-eferences\*.md`
+     `Select-String -Pattern "SaveCase" -Path $KIT\concepts\*.md,$KIT\methods\*.md,$KIT\demos\*.md,$KIT\references\*.md`
 
    Search is step one because it was measured against the alternatives. 48 agents, 16
    questions with human-written answers, 2026-09-07: searching found the right page 10
@@ -137,6 +136,9 @@ Say what you tested, what you rejected, and what you did **not** save.
 | To know what a term or acronym means | [concepts/glossary.md](concepts/glossary.md) |
 | To compare two cases / find what a plan builds | [demos/comparing-planning-cases.md](demos/comparing-planning-cases.md) |
 | To fix violations, not just report them | [demos/violation-remediation.md](demos/violation-remediation.md) |
+| To see violations or islanding on a map | [methods/violation-network-map.md](methods/violation-network-map.md), built by the `violation-map` skill |
+| Which object, field or command to use, and what the kit says about it | `python "$KIT/skills/schema-lookup/engine/lookup.py"`, see [skills/schema-lookup/SKILL.md](skills/schema-lookup/SKILL.md) |
+| Whether a case is sane and ready for a study, with a case summary | `python "$KIT/skills/case-audit/engine/audit.py"`, see [skills/case-audit/SKILL.md](skills/case-audit/SKILL.md) |
 | A worked example of any of this | [demos/start-here.md](demos/start-here.md) |
 | **Anything to fail, at any point** | [methods/handling-errors.md](methods/handling-errors.md) |
 | Anything at all, first | [methods/preflight-powerworld.md](methods/preflight-powerworld.md) |

@@ -1,5 +1,83 @@
 # Changelog
 
+## Unreleased
+
+- **The case-auditor is live: a fifth skill, `case-audit`, and the `case-auditor` agent.** Checks a
+  case read-only and says whether it is READY for a base power flow, an N-1 (its monitoring), a
+  time step, an OPF and a SCOPF, with the case summary the agent presents (load, generation,
+  headroom by fuel type, shunts, size). Eighteen checks as small pure functions over what one
+  esapp read returns, each tested on hand-built cases with no PowerWorld; one AC solve in memory,
+  no retry; the case file's sha256 before and after in `findings.json`; and a test that fails the
+  build if the engine names a write or uses PowerWorld outside an allowlist. Findings go
+  to `./case-audit/<case>/`, which ignores itself in git.
+- Two rule pages: `methods/ltc-regulation-checks.md` and
+  `concepts/unloaded-ehv-stub-overvoltage.md`, with what a live probe of two public cases found
+  (a regulated bus of 0 cannot be written through SimAuto; `BusVoltLimLow/High` read the limit
+  group's band; generator coordinates live on the substation). A third,
+  `concepts/grid-workshop-auto-pfw.md`, is the handoff for missing PFW models.
+- `concepts/opf-preconditions.md`: measured on two public cases, a super area on OPF meets the
+  area condition and makes its member areas redispatchable; a refused OPF does not raise through
+  esapp (read `LPOPFSolutionStatus`); a zero marginal cost on wind and solar is a price, not
+  missing data.
+- Fixed: `methods/timestep-simulation-setup.md` listed an ISO label in `CustomString:2` as a
+  TimeStep prerequisite (it is one pipeline's convention) and pointed at a page that does not
+  exist; `methods/converting-lines-to-transformers.md` glossed `XFAuto = NO` as "not an
+  autotransformer" (it is the automatic-control switch).
+- An eval suite for the case-auditor under `evals/` (`claude plugin eval`): two cases on live
+  audits of the public Hawaii40 and Texas2k cases, six on seeded copies of Hawaii40 that test its
+  judgment. Developer tools (the probe, snapshots, replays, fixtures) are in `tools/case-audit-dev/`,
+  outside `skills/`.
+
+## 0.4.0 — 2026-09-30
+
+- **An agent team, designed and drafted.** `docs/superpowers/specs/2026-09-28-power-system-agents-design.md`
+  sets out a small team that works on measured numbers instead of guesses. Methods are knowledge
+  and agents are roles, so adding a study never adds an agent.
+  - `schema-librarian` is live.
+  - `case-auditor`, `study-runner` and `network-visualizer` ship as role-contract drafts in
+    `docs/agents/`. They load only once their engines are built.
+  - `run-supervisor` and `plan-pictures` are drafts of main-session skills.
+  - The auditor opens every scan with a case summary: load, generation, headroom by fuel type,
+    shunt capacity. It says what a study will actually do ("84 of 87 renewables will follow the
+    weather; 3 read 0 MW") and blocks only what cannot run.
+  - The runner turns a plain request into a settings change, stops for approval, and covers AC,
+    DC, N-1, OPF, SCOPF and now TimeStep. Long runs hand off to the supervisor.
+  - Every draft follows the same rules: plain requests in, short answers out (an approval is
+    8 lines or fewer, a break is 3 plain lines), and approval recorded in the settings file.
+- **Pages are the answer where a picture beats a paragraph.** Two reference pages ship in
+  `docs/agents/pages/`.
+  - `design-compare.html` draws every option on the network around the site, with its overloads
+    and low buses painted on, side by side.
+  - `run-watch.html` is a live status page for a long run: a badge top right, a one-line answer,
+    progress, a run clock and the timeline.
+- **Study references.** `references/powerworld-study-options.md` (curated, provenance-tagged),
+  `references/powerworld-option-objects-v25.md` (every option object's fields),
+  `references/powerworld-study-commands.md` (every study SCRIPT command) and the Simulator 25
+  field export, `references/powerworld-object-fields-v25.xlsx`.
+
+- **A fourth skill, `schema-lookup`, and the kit's first agent, `schema-librarian`.** Answers which
+  PowerWorld object, field or SCRIPT command to use from the Simulator 25 field export
+  (`references/powerworld-object-fields-v25.xlsx`), and prints what
+  `references/powerworld-study-options.md` says about the field verbatim — including rows that
+  call a field a decoy or a trap. Key fields, required fields, writability, concise and colon
+  names, and a ranked search across ~100,000 fields; no PowerWorld needed. `powerworld-setup` now
+  installs `openpyxl`. Also fixed: two pages still said islanding is undetectable after
+  `CTGSolveAll`, and the parallel-contingency page lacked the rule to `.exit()` instances you own.
+
+- **A third skill, `violation-map`, and the method page behind it.** It builds two
+  single-file HTML maps from a case: a **voltage page** (the substations around the
+  out-of-band buses, every line in its own kV colour, a click-to-zoom problem list,
+  substation one-lines, the reactive balance inside the radius, and candidate fixes measured
+  in memory with a Before/After switch and a scenario × outage grid) and a **radial-ties page**
+  (every bridge whose single outage islands part of the grid, grouped into radial trees, with
+  a suggested tie per tree and its AC-measured verdict). The engine under
+  `skills/violation-map/engine/` is driven by one `config.json`; nothing it runs writes to a
+  case. `methods/violation-network-map.md` carries the page contract and the traps each of
+  which cost a run: islanding solves with zero violations, an undo does not restore taps or
+  shunts, a tie's rating does not scale with its length, and an un-exited PowerWorld stays
+  resident. Verified end to end on a 10,000-bus synthetic planning model; there is no thermal
+  view yet, and the page says so.
+
 ## 0.3.0 — 2026-09-21
 
 - **Three new concept pages.** `concepts/powerworld-script-transfer.md` documents Simulator

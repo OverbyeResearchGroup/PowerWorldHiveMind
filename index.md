@@ -30,6 +30,7 @@ Step-by-step procedures. Read the one that matches your task.
 | [esapp-overview](methods/esapp-overview.md) | The starting page: open a case, read and write data, solve power flow, and use `snapshot()` to experiment without damaging anything. |
 | [handling-errors](methods/handling-errors.md) | What to do when something fails, sorted into fix it yourself, fix it and mention it, and stop and ask. |
 | [how-to-analyze-results](methods/how-to-analyze-results.md) | Read the solar and wind CSVs a timestep run produces: the two-file naming, the 8-row metadata header, and the UTC timestamp conversion. |
+| [ltc-regulation-checks](methods/ltc-regulation-checks.md) | Check which bus each LTC and switched shunt actually holds and how it targets its band: a regulator pointed at nothing, `XFRegTargetType = Middle`, and an LTC holding its LV side while the HV side floats. Re-point, don't write taps. |
 | [new-device-contingency-aux](methods/new-device-contingency-aux.md) | Turn a list of devices into a contingency set plus an area-restricted violation filter, shipped as one `.aux` that loads without saving the case. |
 | [powerworld-limitset-setdata](methods/powerworld-limitset-setdata.md) | Change PowerWorld's limit-monitoring thresholds. `SetData` on `LimitSet` fails with a missing-key-field error unless you supply the entire field row. |
 | [preflight-powerworld](methods/preflight-powerworld.md) | Five checks in five seconds: can this machine drive PowerWorld from Python at all? Run it before writing any analysis code. |
@@ -39,6 +40,7 @@ Step-by-step procedures. Read the one that matches your task.
 | [save-powerworld-case](methods/save-powerworld-case.md) | Write an open case back to disk. The COM `SaveCase` returns success and writes no file, so use the script form and check the file exists. |
 | [teamoverbyeweather-client](methods/teamoverbyeweather-client.md) | Download a weather dataset, crop it to a region and a time window, and get `.pww` files ready for PowerWorld. Pure Python — no PowerWorld licence needed. |
 | [timestep-simulation-setup](methods/timestep-simulation-setup.md) | Drive TimeStep to turn `.pww` files into hourly generation CSVs, including the per-generator prerequisites a case must satisfy first. |
+| [violation-network-map](methods/violation-network-map.md) | Put the violations on an interactive map: the voltage page (problem list, one-lines, reactive balance, measured fixes with Before/After) and the radial-ties page (bridges whose one outage islands load, a suggested tie per tree). Built by the `violation-map` skill. |
 | [visualize-renewable-output](methods/visualize-renewable-output.md) | Plot the timestep CSVs: fleet totals over time, per-ISO and per-state breakdowns, capacity-factor curves, and peak and trough hours. |
 
 ## Concepts — what a thing is
@@ -56,6 +58,7 @@ Background. Read when a method references something you do not recognise.
 | [esapp](concepts/esapp.md) | The full API map for `esapp`: top-level imports, architecture, and what the package can actually do. |
 | [gic](concepts/gic.md) | Geomagnetically induced currents: what they do to transformers during a geomagnetic disturbance, and what PowerWorld models. |
 | [glossary](concepts/glossary.md) | Every acronym and piece of jargon this kit uses, defined once. Read the confused-pairs section even if you skip the rest — PWW versus PFW has cost people whole afternoons. |
+| [grid-workshop-auto-pfw](concepts/grid-workshop-auto-pfw.md) | The Grid-Workshop `Auto_PFW` scripts attach PFW weather models to wind and solar units so TimeStep produces MW. They skip a wind unit with no class without a warning, so re-count coverage on the copy they save. |
 | [lodf](concepts/lodf.md) | Every branch's post-outage flow for every single-branch outage, from one matrix factorization. Measured live it is not an approximation of DC contingency analysis; it is the same answer. |
 | [opf-preconditions](concepts/opf-preconditions.md) | LP OPF needs three independent preconditions at once — an area under `BGAGC = "OPF"`, AGC-able generators, and a real cost model — and misses a fatal error rather than a degraded solve. Synthetic cases routinely ship with all three off. |
 | [parallel-contingency-solve](concepts/parallel-contingency-solve.md) | PowerWorld's own distributed `CTGSolveAll` never spawns workers here and silently degrades to serial. Split the contingency set across N processes instead. |
@@ -66,6 +69,7 @@ Background. Read when a method references something you do not recognise.
 | [pww-data](concepts/pww-data.md) | The PWW binary weather format: gridded variables packed as uint8 per timestep and grid point, with 255 as the NaN sentinel. |
 | [timestep-simulation](concepts/timestep-simulation.md) | What a timestep simulation is here: hourly renewable output computed quasi-statically from weather data. It is not a transient-stability study. |
 | [timestep-workflow](concepts/timestep-workflow.md) | The whole chain from a `.pww` file to per-generator hourly CSVs, in the order PowerWorld requires it. |
+| [unloaded-ehv-stub-overvoltage](concepts/unloaded-ehv-stub-overvoltage.md) | A lightly loaded EHV dead end rises at its open end on its own line charging and islands on one outage. A tie into a substation with absorbing room fixes both; a reactor fixes only the voltage. |
 | [version-requirements](concepts/version-requirements.md) | Which Simulator version you need and what this kit was verified against: build 24.2026.7.22, with 13 of 14 feature areas confirmed working. |
 
 ## References — the heavy code layer
@@ -74,7 +78,10 @@ Exact backend mechanics. Open ONLY when writing code, and only the one you need.
 
 | Page | What it covers |
 |---|---|
-| [aux-script-commands](references/aux-script-commands.md) | Which SCRIPT command does a job, organized by task. Argument lists and exact syntax live in PowerWorld's own *Auxiliary File Format* manual, not here. |
+| [aux-script-commands](references/aux-script-commands.md) | Which SCRIPT command does a job, organized by task. Argument lists and exact syntax for study commands are in [powerworld-study-commands](references/powerworld-study-commands.md). |
+| [powerworld-study-options](references/powerworld-study-options.md) | **Start here to change how a study runs.** Per study (power flow, DC, N-1, OPF, SCOPF, sensitivities, ATC, PV/QV, scaling, islands, time step, weather): the option object and command that control it, key fields tagged verified / documented / schema-only, and the silent behaviours. |
+| [powerworld-option-objects-v25](references/powerworld-option-objects-v25.md) | Generated: every field of all 32 `*_Options` objects from the Simulator 25 field export, with writability and PowerWorld's descriptions. |
+| [powerworld-study-commands](references/powerworld-study-commands.md) | Every study SCRIPT command with its parameters and defaults, how options are written in aux, and 29 silent behaviours. |
 | [esapp-package-backend](references/esapp-package-backend.md) | esapp internals: bracket-interface mechanics, SAW mixin composition, the component-generation pipeline, the schema model, and the exception hierarchy. |
 | [esapp-schema-reference](references/esapp-schema-reference.md) | The exact key fields and command names for writing esapp code. Open it when a read-modify-write has to round-trip. |
 | [time-step-simulation-backend](references/time-step-simulation-backend.md) | The timestep worker's PowerWorld call sequence, its generator field list, and the CSV post-processing that skips the 8 header rows. |
