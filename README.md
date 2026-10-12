@@ -115,3 +115,35 @@ thing it documents.
 
 PowerWorld Simulator is commercial software of PowerWorld Corporation. This is an
 independent knowledge base and is not affiliated with or endorsed by them.
+
+## For agents
+
+Read [AGENTS.md](AGENTS.md). It has the traversal protocol, the task-routing table, and
+the eight rules that fail silently.
+
+<!-- Sections below were added on 2026-09-27. The original text above is unchanged. -->
+
+## Running
+
+Apart from the install steps and the slash commands above, users run no script from this
+repository: the agent reads the pages. The one script in the repository, `build_dist.py`,
+is for maintainers.
+It rebuilds the files in [`dist/`](dist/): the single-file bundles and the skill zip for
+chat tools that cannot clone a repository.
+
+After editing any page, run it from the repository root. It uses the Python 3 standard
+library only:
+
+```
+python build_dist.py
+```
+
+It overwrites these files:
+
+| File | Contents |
+|---|---|
+| `dist/powerworld-hivemind-bundle.md` | `AGENTS.md`, `index.md` and every page in `demos/`, `methods/`, `concepts/` and `references/` |
+| `dist/powerworld-hivemind-<folder>.md` | One file for each of those four folders |
+| `dist/powerworld-hivemind-skill.zip` | `skills/powerworld/SKILL.md`, `AGENTS.md`, `index.md` and the same pages, under `powerworld/` |
+
+The build does not include `PowerWorld-Help/`, `commands/` or `skills/knowledge-base-page/`.
