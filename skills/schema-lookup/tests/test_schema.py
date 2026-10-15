@@ -168,3 +168,26 @@ def test_corrupt_export_is_a_schema_error(tmp_path, monkeypatch):
     schema._MEMO.clear()
     with pytest.raises(schema.SchemaError, match="not a readable xlsx"):
         schema.load_fields(bad)
+
+
+# ---- unit spellings: PowerWorld writes Mvar as MVR in variable names
+
+def test_mvar_spellings_fold_to_one_field(fields):
+    for guess in ("GenMvar", "GenMegaVar", "genmvr"):
+        assert schema.find_field_folded("Gen", guess, fields).variable == "GenMVR"
+    assert schema.find_field_folded("Load", "LoadMvar", fields).variable == "LoadMVR"
+
+
+def test_fold_does_not_invent_a_field(fields):
+    assert schema.find_field_folded("Gen", "GenMegaWattHours", fields) is None
+
+
+def test_query_terms_read_plain_english():
+    assert schema.query_terms("GenMegaVar") == ["gen", "mvar"]
+    assert schema.query_terms("generator reactive power") == ["generator", "mvar"]
+    assert schema.query_terms("load real power") == ["load", "mw"]
+
+
+def test_search_finds_generator_mvar_output(fields):
+    for q in ("generator reactive power output", "generator mvar", "GenMegaVar"):
+        assert schema.search(q, limit=1, fields=fields)[0].variable == "GenMVR"

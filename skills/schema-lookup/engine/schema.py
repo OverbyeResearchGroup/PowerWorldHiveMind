@@ -188,6 +188,47 @@ def find_field(obj: str, name: str, fields: dict | None = None) -> Field | None:
     return None
 
 
+# PowerWorld writes Mvar as "MVR" in variable names (GenMVR, LoadMVR) but as "Mvar" in concise
+# names and dialog paths, so "GenMvar" and "GenMegaVar" miss an exact match. Folding both sides
+# to one spelling of the unit makes them the same name; it never joins two different words.
+_FOLD = [(re.compile(r"megavar|mvr"), "mvar"), (re.compile(r"megawatt"), "mw")]
+
+# Plain-English phrases for a search query -> the unit word PowerWorld fields use.
+_QUERY_WORDS = [
+    (re.compile(r"\b(?:reactive power|mega ?vars?|mvars?|mvr)\b"), "mvar"),
+    (re.compile(r"\b(?:real power|active power|mega ?watts?)\b"), "mw"),
+    (re.compile(r"\b(?:apparent power|mega ?volt ?amps?)\b"), "mva"),
+    (re.compile(r"\bper ?unit\b"), "pu"),
+]
+
+
+def fold_units(name: str) -> str:
+    """GenMVR, GenMvar, GenMegaVar -> 'genmvar'."""
+    s = normalize_field_name(name).lower()
+    for pat, rep in _FOLD:
+        s = pat.sub(rep, s)
+    return s
+
+
+def find_field_folded(obj: str, name: str, fields: dict | None = None) -> Field | None:
+    """The one field whose name equals `name` once Mvar/MW spellings are folded, else None."""
+    want = fold_units(name)
+    hits = [f for f in object_fields(obj, fields)
+            if fold_units(f.variable) == want or (f.concise and fold_units(f.concise) == want)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def query_terms(query: str) -> list[str]:
+    """'GenMegaVar' -> ['gen', 'mvar']; 'generator reactive power' -> ['generator', 'mvar']."""
+    words = []
+    for tok in query.split():
+        words += split_words(tok) if re.search(r"[a-z][A-Z]", tok) else [tok.lower()]
+    text = " ".join(w for w in re.split(r"\W+", " ".join(words)) if w)
+    for pat, rep in _QUERY_WORDS:
+        text = pat.sub(rep, text)
+    return text.split()
+
+
 def close_field_names(obj: str, name: str, fields: dict | None = None) -> list[str]:
     """Spelling neighbours only — not substitutes for the field that was asked for."""
     names = [f.variable for f in object_fields(obj, fields)]
@@ -202,17 +243,20 @@ def split_words(name: str) -> list[str]:
 
 def search(query: str, obj: str | None = None, limit: int = 20,
            fields: dict | None = None) -> list[Field]:
-    terms = [t for t in re.split(r"\W+", query.lower()) if t]
+    terms = query_terms(query)
     if not terms:
         return []
     fields = fields if fields is not None else load_fields()
     pool = object_fields(obj, fields) if obj else [f for fs in fields.values() for f in fs]
     scored = []
     for f in pool:
-        names = f"{f.variable} {f.concise}".lower()
-        text = f"{names} {f.dialog_path} {f.description}".lower()
+        names = fold_units(f"{f.variable} {f.concise}")
+        text = f"{names} {fold_units(f.dialog_path)} {fold_units(f.description)}"
         hits = sum(t in text for t in terms)
         if hits:
-            scored.append((-hits, -sum(t in names for t in terms), f.object, f.variable, f))
-    scored.sort(key=lambda s: s[:4])
-    return [s[4] for s in scored[:limit]]
+            # "generator" names the Gen object; on a tie the shorter dialog path is the plain field.
+            on_object = any(t.startswith(f.object.lower()) for t in terms)
+            scored.append((-hits, -on_object, -sum(t in names for t in terms),
+                           len(f.dialog_path), f.object, f.variable, f))
+    scored.sort(key=lambda s: s[:6])
+    return [s[6] for s in scored[:limit]]

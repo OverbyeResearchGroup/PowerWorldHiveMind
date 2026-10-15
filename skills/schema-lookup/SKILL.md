@@ -27,6 +27,12 @@ python "${CLAUDE_PLUGIN_ROOT}/skills/schema-lookup/engine/lookup.py" search "<wo
 - Don't know the object? `search` without `--object`, then `object` on the best hit.
 - A field may be given by variable name (`DCPFMode`), concise name (`DCApprox`) or Python
   spelling (`MaxItr__1`); all resolve to one field.
+- PowerWorld writes Mvar as `MVR` in variable names. `field Gen GenMvar` (or `GenMegaVar`) resolves
+  to `GenMVR` and prints a `note:` line saying so; give the user `GenMVR`. `search` reads "reactive
+  power", "megavars", "real power" and "per unit" as Mvar, MW and pu.
+- Never search the whole field export for a concise name: `GenMvar` is the concise name of
+  aggregates on Area, Zone, Bus and 20 other objects, not of the generator's output. Background and
+  a table of common fields: `${CLAUDE_PLUGIN_ROOT}/methods/finding-field-names.md`.
 - Exit 2 with "pip install openpyxl": tell the user to run it (or `/powerworld-hivemind:powerworld-setup`).
 
 ## 2. Read what the tool printed about the hub

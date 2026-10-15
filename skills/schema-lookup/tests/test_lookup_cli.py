@@ -84,3 +84,10 @@ def test_field_named_in_hub_prose_is_not_called_untested():
     assert code == 0
     assert "field export only" not in out
     assert "2026-09-28" in out
+
+
+def test_field_with_mvar_spelling_names_the_real_field():
+    code, out, _ = run("field", "Gen", "GenMvar")
+    assert code == 0
+    assert "it is GenMVR" in out
+    assert "Gen.GenMVR  (concise: Mvar)" in out

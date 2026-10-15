@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`schema-lookup` now handles Mvar spellings.** `field Gen GenMvar` and `GenMegaVar` resolve to
+  `GenMVR` with a note (PowerWorld writes Mvar as MVR in variable names), and `search` reads
+  "reactive power", "megavars", "real power" and "per unit". "generator reactive power output"
+  now returns `Gen.GenMVR` first. New page `methods/finding-field-names.md`: why a search of the
+  field export for `GenMvar` lands on Area/Zone aggregates, how to look a field up by hand, a
+  table of common fields, and why open generators read 0 in `GenMW`/`GenMVR`.
 - **The case-auditor is live: a fifth skill, `case-audit`, and the `case-auditor` agent.** Checks a
   case read-only and says whether it is READY for a base power flow, an N-1 (its monitoring), a
   time step, an OPF and a SCOPF, with the case summary the agent presents (load, generation,

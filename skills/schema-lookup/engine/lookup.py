@@ -42,6 +42,12 @@ def show_object(name: str, fields: dict) -> str:
 def show_field(obj: str, name: str, fields: dict) -> tuple[int, str]:
     obj = schema.resolve_object(obj, fields)
     f = schema.find_field(obj, name, fields)
+    note = None
+    if f is None:
+        f = schema.find_field_folded(obj, name, fields)
+        if f is not None:
+            note = (f"note: no field is spelled {name!r}; it is {f.variable}, the same name with "
+                    f"PowerWorld's unit spelling (Mvar is written MVR in variable names)")
     if f is None:
         near = schema.close_field_names(obj, name, fields)
         lines = [
@@ -61,6 +67,8 @@ def show_field(obj: str, name: str, fields: dict) -> tuple[int, str]:
         f"dialog: {f.dialog_path}",
         f"description: {f.description}",
     ]
+    if note:
+        lines.insert(0, note)
     rows = hub_rows(obj, f.variable, fields)
     if rows:
         lines.append("hub rows (verbatim; 'name' rows may concern another object):")
